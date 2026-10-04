@@ -69,7 +69,7 @@ export interface AnnotateContext {
   /** True when the document was converted from HTML or a remote reader result. */
   sourceConverted?: boolean;
   /** Render mode for the annotated content. */
-  renderAs?: "markdown" | "html";
+  renderAs?: "markdown" | "html" | "code";
   /** Summary of annotations the user has made. */
   annotations?: string;
 }

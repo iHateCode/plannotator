@@ -15,7 +15,7 @@ import { parseMarkdownToBlocks } from '@plannotator/ui/utils/parser';
 import { getDocPreviewFetcher } from '@plannotator/ui/components/InlineMarkdown';
 import type { ViewerHandle } from '@plannotator/ui/components/Viewer';
 import type { CachedDocState } from '@plannotator/ui/hooks/useLinkedDoc';
-import { AnnotationType, type Annotation, type Block, type VaultNode } from '@plannotator/ui/types';
+import { AnnotationType, type Annotation, type Block, type DocumentRenderAs, type VaultNode } from '@plannotator/ui/types';
 import { getWebMcpPolicy, useToolset, useWebMcpToolsEnabled, type DocumentSurface } from '@plannotator/ui/webmcp';
 import {
   buildDocumentHooks,
@@ -47,7 +47,7 @@ export interface DocumentWebMcpInputs {
   archiveMode: boolean;
   gate: boolean;
   submitted: 'approved' | 'denied' | 'exited' | null;
-  renderAs: 'markdown' | 'html';
+  renderAs: DocumentRenderAs;
   rawHtml: string;
   displayedMarkdown: string;
   blocks: Block[];

@@ -18,7 +18,7 @@ import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleDraftSave, handleDraftLoad, handleDraftDelete, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
 import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
-import { getExtraMarkdownExtensions, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
+import { getCodeExtensions, getExtraMarkdownExtensions, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash, deleteDraft } from "./draft";
 import { getPlanVersion, getVersionCount, listVersions } from "@plannotator/shared/storage";
 import { computeAnnotateHistory, deriveAnnotateHistorySlug, persistAnnotateSubmission, type AnnotateHistoryResult } from "@plannotator/shared/annotate-history";
@@ -66,7 +66,7 @@ import {
 } from "@plannotator/shared/live-proxy-core";
 import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
-import { annotateDiagramRenderKind } from "@plannotator/shared/annotatable";
+import { annotateCodeLanguage, annotateDiagramRenderKind } from "@plannotator/shared/annotatable";
 
 // Re-export utilities
 export { isRemoteSession, getServerPort } from "./remote";
@@ -298,6 +298,13 @@ export async function startAnnotateServer(
     mode,
     renderHtml,
     sourceConverted,
+  });
+  const codeLanguage = annotateCodeLanguage({
+    filePath,
+    mode,
+    renderHtml,
+    sourceConverted,
+    codeExtensions: getCodeExtensions(),
   });
 
   // Per-file version history → powers the native version diff in annotate mode.
@@ -793,7 +800,10 @@ export async function startAnnotateServer(
               clientLease: clientLeaseSupported
                 ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
                 : { enabled: false as const },
-              renderAs: displayRawHtml ? 'html' as const : diagramRenderKind ?? ('markdown' as const),
+              renderAs: displayRawHtml
+                ? 'html' as const
+                : diagramRenderKind ?? (codeLanguage ? ('code' as const) : ('markdown' as const)),
+              codeLanguage: codeLanguage ?? undefined,
               ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               ...(diffHtml ? { diffHtml } : {}),
               convertHtml,

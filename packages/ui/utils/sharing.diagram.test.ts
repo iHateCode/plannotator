@@ -38,4 +38,28 @@ describe("shareableDocumentMarkdown", () => {
   test("an empty body is left empty rather than becoming an empty fence", () => {
     expect(shareableDocumentMarkdown("", "mermaid")).toBe("");
   });
+
+  test("a code file ships fenced in its language", () => {
+    const code = "echo 1\necho 2\n";
+    const shared = shareableDocumentMarkdown(code, "code", "bash");
+    expect(shared).toBe("```bash\necho 1\necho 2\n```");
+    const blocks = parseMarkdownToBlocks(shared);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].language).toBe("bash");
+    expect(blocks[0].content).toBe(code.trimEnd());
+  });
+
+  test("a code body containing a ``` run gets a longer fence, one past the longest run", () => {
+    const code = "cat <<EOF\n```` four\n```\nEOF\n";
+    const shared = shareableDocumentMarkdown(code, "code", "bash");
+    expect(shared.startsWith("`````bash\n")).toBe(true);
+    expect(shared.endsWith("\n`````")).toBe(true);
+    const blocks = parseMarkdownToBlocks(shared);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].content).toBe(code.trimEnd());
+  });
+
+  test("code without a language is left unchanged", () => {
+    expect(shareableDocumentMarkdown("x = 1\n", "code", null)).toBe("x = 1\n");
+  });
 });

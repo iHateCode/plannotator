@@ -30,9 +30,12 @@
  *   `.env.example` (the secret-free template convention) is accepted.
  *   `.env` is also denylisted for the user-configurable extra extensions
  *   below, so no config value can register it.
- * - Source-code extensions (.ts, .py, …) — those belong to the code-file
- *   link/popout system (`CODE_FILE_REGEX` in `code-file.ts`) and would also
- *   flood the annotate folder file browser.
+ * - Source-code extensions (.ts, .py, …) — excluded by default. They belong
+ *   to the code-file link/popout system (`CODE_FILE_REGEX` in `code-file.ts`)
+ *   and would flood the annotate folder file browser, so they are opt-in per
+ *   extension through `codeExtensions` (see `CODE_LANGUAGE_BY_EXTENSION`).
+ *   An opted-in file renders as ONE highlighted code block, never as
+ *   markdown, and is never editable.
  *
  * Note the overlap with `CODE_FILE_REGEX` (.yaml/.json/.toml/.ini/.xml appear
  * in both): a path's *rendering* depends on the surface. Code-file links
@@ -103,6 +106,64 @@ export function annotateDiagramRenderKind(options: {
 	if ((options.mode ?? "annotate") !== "annotate") return null;
 	if (/^https?:\/\//i.test(options.filePath.trim())) return null;
 	return diagramRenderKindForPath(options.filePath);
+}
+
+/**
+ * Built-in map from a file extension to the Shiki language id used to colour it.
+ * An extension is only treated as code when the user has ALSO listed it in
+ * `codeExtensions` — this table says how to draw it, config says whether to.
+ */
+export const CODE_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
+	".cs": "csharp",
+	".cshtml": "razor",
+	".csproj": "xml",
+	".sln": "ini",
+	".sh": "bash",
+	".bash": "bash",
+	".zsh": "bash",
+	".py": "python",
+	".ts": "typescript",
+	".tsx": "tsx",
+	".js": "javascript",
+	".jsx": "jsx",
+	".css": "css",
+	".scss": "scss",
+	".sql": "sql",
+	".go": "go",
+	".rs": "rust",
+	".java": "java",
+	".rb": "ruby",
+};
+
+/** The Shiki language for `input` when it is an opted-in code extension, else null. */
+export function codeLanguageForPath(
+	input: string,
+	codeExtensions: readonly string[] = [],
+): string | null {
+	if (codeExtensions.length === 0) return null;
+	const match = /\.[A-Za-z0-9]+$/.exec(input.trim());
+	if (!match) return null;
+	const ext = match[0].toLowerCase();
+	return codeExtensions.includes(ext) ? CODE_LANGUAGE_BY_EXTENSION[ext] ?? null : null;
+}
+
+/**
+ * The Shiki language to draw this annotate session's file in, or null. Mirrors
+ * `annotateDiagramRenderKind`: never for raw HTML, converted sources, other
+ * modes, or URLs.
+ */
+export function annotateCodeLanguage(options: {
+	filePath: string;
+	mode?: string;
+	renderHtml?: boolean;
+	sourceConverted?: boolean;
+	codeExtensions?: readonly string[];
+}): string | null {
+	if (options.renderHtml === true) return null;
+	if (options.sourceConverted === true) return null;
+	if ((options.mode ?? "annotate") !== "annotate") return null;
+	if (/^https?:\/\//i.test(options.filePath.trim())) return null;
+	return codeLanguageForPath(options.filePath, options.codeExtensions ?? []);
 }
 
 /** Plain-text file extensions annotate accepts as markdown-rendered text (no HTML). */
@@ -177,6 +238,27 @@ export function normalizeMarkdownExtensions(value: unknown): string[] {
 	return result;
 }
 
+/**
+ * Normalize a user-supplied `codeExtensions` value. Same shape rules as
+ * `normalizeMarkdownExtensions`, plus: the extension must be a key of
+ * CODE_LANGUAGE_BY_EXTENSION, and the dotenv family is denied.
+ */
+export function normalizeCodeExtensions(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const result: string[] = [];
+	for (const entry of value) {
+		if (result.length >= MAX_CONFIGURABLE_EXTENSIONS) break;
+		if (typeof entry !== "string") continue;
+		const ext = entry.trim().toLowerCase();
+		if (!CONFIGURABLE_EXTENSION_RE.test(ext)) continue;
+		if (isDeniedMarkdownExtension(ext)) continue;
+		if (!(ext in CODE_LANGUAGE_BY_EXTENSION)) continue;
+		if (result.includes(ext)) continue;
+		result.push(ext);
+	}
+	return result;
+}
+
 const regexCache = new Map<string, RegExp>();
 
 function buildRegex(basePattern: string, extra: readonly string[]): RegExp {
@@ -195,23 +277,23 @@ function buildRegex(basePattern: string, extra: readonly string[]): RegExp {
 }
 
 /** Plain-text (markdown-rendered) extension matcher including configured extras. */
-export function buildAnnotatableTextRegex(extra: readonly string[] = []): RegExp {
-	return buildRegex(BUILTIN_TEXT_PATTERN, extra);
+export function buildAnnotatableTextRegex(extra: readonly string[] = [], codeExtra: readonly string[] = []): RegExp {
+	return buildRegex(BUILTIN_TEXT_PATTERN, [...extra, ...codeExtra]);
 }
 
 /** Plain-text + raw-HTML extension matcher including configured extras. */
-export function buildAnnotatableDocRegex(extra: readonly string[] = []): RegExp {
-	return buildRegex(BUILTIN_DOC_PATTERN, extra);
+export function buildAnnotatableDocRegex(extra: readonly string[] = [], codeExtra: readonly string[] = []): RegExp {
+	return buildRegex(BUILTIN_DOC_PATTERN, [...extra, ...codeExtra]);
 }
 
 /** True when annotate can open `input` as a plain-text (markdown-rendered) document. */
-export function isAnnotatableTextPath(input: string, extra: readonly string[] = []): boolean {
-	return buildAnnotatableTextRegex(extra).test(input.trim());
+export function isAnnotatableTextPath(input: string, extra: readonly string[] = [], codeExtra: readonly string[] = []): boolean {
+	return buildAnnotatableTextRegex(extra, codeExtra).test(input.trim());
 }
 
 /** True when annotate can open `input` at all (plain text or raw HTML). */
-export function isAnnotatableDocPath(input: string, extra: readonly string[] = []): boolean {
-	return buildAnnotatableDocRegex(extra).test(input.trim());
+export function isAnnotatableDocPath(input: string, extra: readonly string[] = [], codeExtra: readonly string[] = []): boolean {
+	return buildAnnotatableDocRegex(extra, codeExtra).test(input.trim());
 }
 
 /** True when `input` is annotatable only because of a configured extra extension. */
@@ -265,11 +347,13 @@ export const MAX_ANNOTATABLE_FILE_BYTES = 2 * 1024 * 1024;
 export function shouldStripFrontmatter(
 	path: string | null | undefined,
 	extra: readonly string[] = [],
+	codeExtra: readonly string[] = [],
 ): boolean {
 	if (!path) return true;
 	const trimmed = path.trim();
 	if (diagramRenderKindForPath(trimmed) !== null) return false;
+	if (codeLanguageForPath(trimmed, codeExtra) !== null) return false;
 	if (/\.mdx?$/i.test(trimmed)) return true;
 	if (isExtraMarkdownPath(trimmed, extra)) return true;
-	return !isAnnotatableTextPath(trimmed, extra);
+	return !isAnnotatableTextPath(trimmed, extra, codeExtra);
 }

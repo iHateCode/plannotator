@@ -20,6 +20,7 @@ export interface LinkedDocLoadData {
   filepath?: string;
   isConverted?: boolean;
   renderAs?: DocumentRenderAs;
+  codeLanguage?: string;
   rawHtml?: string;
   shareHtml?: string;
   sourceSave?: SourceSaveCapability;
@@ -74,6 +75,8 @@ export interface UseLinkedDocOptions {
   /** Current render mode + raw HTML of the base document. An HTML linked/folder file
    *  swaps these to render raw; back() restores the base values from this snapshot. */
   renderAs: DocumentRenderAs;
+  codeLanguage: string | null;
+  setCodeLanguage: (l: string | null) => void;
   rawHtml: string;
   shareHtml: string;
   setRenderAs: (r: DocumentRenderAs) => void;
@@ -107,6 +110,7 @@ interface SavedPlanState {
   selectedAnnotationId: string | null;
   globalAttachments: ImageAttachment[];
   renderAs: DocumentRenderAs;
+  codeLanguage: string | null;
   rawHtml: string;
   shareHtml: string;
 }
@@ -116,6 +120,7 @@ export interface CachedDocState {
   globalAttachments: ImageAttachment[];
   markdown?: string;
   isConverted?: boolean;
+  codeLanguage?: string | null;
   /** Version-diff baseline captured the first time this document was
    *  activated — see LinkedDocLoadData. Persisted here so re-opening the
    *  same document later in the session reuses it instead of losing it (or
@@ -199,6 +204,8 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     setSelectedAnnotationId,
     setGlobalAttachments,
     renderAs,
+    codeLanguage,
+    setCodeLanguage,
     rawHtml,
     shareHtml,
     setRenderAs,
@@ -218,6 +225,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
   const [linkedDoc, setLinkedDoc] = useState<{
     filepath: string;
     isConverted?: boolean;
+    codeLanguage?: string | null;
     markdown?: string;
     previousPlan?: string | null;
     versionInfo?: VersionInfo | null;
@@ -256,6 +264,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         globalAttachments: [...globalAttachments],
         markdown: getDocumentMarkdown?.(linkedDoc.filepath, linkedDoc.markdown) ?? linkedDoc.markdown,
         isConverted: linkedDoc.isConverted,
+        codeLanguage: linkedDoc.codeLanguage ?? null,
         previousPlan: linkedDoc.previousPlan,
         versionInfo: linkedDoc.versionInfo,
       });
@@ -270,6 +279,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     // Restore plan state (including render mode — an HTML base restores to HTML)
     const saved = savedPlanState.current;
     setRenderAs(saved.renderAs);
+    setCodeLanguage(saved.codeLanguage);
     setRawHtml(saved.rawHtml);
     setShareHtml(saved.shareHtml);
     setMarkdown(saved.markdown);
@@ -347,6 +357,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         selectedAnnotationId,
         globalAttachments: [...globalAttachments],
         renderAs,
+        codeLanguage,
         rawHtml,
         shareHtml,
       };
@@ -363,6 +374,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         globalAttachments: [...globalAttachments],
         markdown: getDocumentMarkdown?.(linkedDoc.filepath, linkedDoc.markdown) ?? linkedDoc.markdown,
         isConverted: linkedDoc.isConverted,
+        codeLanguage: linkedDoc.codeLanguage ?? null,
         previousPlan: linkedDoc.previousPlan,
         versionInfo: linkedDoc.versionInfo,
       });
@@ -387,7 +399,15 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     // text is the document body — but names its engine so the App renders it
     // as one diagram instead of parsing it as markdown.
     const docRenderAs: DocumentRenderAs =
-      data.renderAs === 'html' ? 'html' : isDiagramRenderKind(data.renderAs) ? data.renderAs : 'markdown';
+      data.renderAs === 'html'
+        ? 'html'
+        : data.renderAs === 'code'
+          ? 'code'
+          : isDiagramRenderKind(data.renderAs)
+            ? data.renderAs
+            : 'markdown';
+    const docCodeLanguage = docRenderAs === 'code' ? (data.codeLanguage ?? null) : null;
+    setCodeLanguage(docCodeLanguage);
     const hostMarkdown = docRenderAs === 'html' || !notifyDocumentLoaded ? undefined : onDocumentLoaded?.(data);
     const nextMarkdown = notifyDocumentLoaded
       ? hostMarkdown ?? cached?.markdown ?? data.markdown ?? ''
@@ -403,6 +423,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     setLinkedDoc({
       filepath: data.filepath,
       isConverted: !!data.isConverted,
+      codeLanguage: docCodeLanguage,
       markdown: nextMarkdown,
       previousPlan: diffBaseline.previousPlan,
       versionInfo: diffBaseline.versionInfo,
@@ -424,6 +445,8 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
     selectedAnnotationId,
     globalAttachments,
     renderAs,
+    codeLanguage,
+    setCodeLanguage,
     rawHtml,
     shareHtml,
     linkedDoc,
@@ -510,6 +533,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         globalAttachments: [...globalAttachments],
         markdown: getDocumentMarkdown?.(linkedDoc.filepath, linkedDoc.markdown) ?? linkedDoc.markdown,
         isConverted: linkedDoc.isConverted,
+        codeLanguage: linkedDoc.codeLanguage ?? null,
         previousPlan: linkedDoc.previousPlan,
         versionInfo: linkedDoc.versionInfo,
       });
@@ -519,6 +543,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
       ? {
           markdown: savedPlanState.current.markdown,
           renderAs: savedPlanState.current.renderAs,
+          codeLanguage: savedPlanState.current.codeLanguage,
           rawHtml: savedPlanState.current.rawHtml,
           shareHtml: savedPlanState.current.shareHtml,
           annotations: [...savedPlanState.current.annotations],
@@ -528,6 +553,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
       : {
           markdown,
           renderAs,
+          codeLanguage,
           rawHtml,
           shareHtml,
           annotations: [...annotations],
@@ -551,6 +577,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
 
     setMarkdown(state.root.markdown);
     setRenderAs(state.root.renderAs);
+    setCodeLanguage(state.root.codeLanguage ?? null);
     setRawHtml(state.root.rawHtml);
     setShareHtml(state.root.shareHtml);
     setAnnotations([...state.root.annotations]);
@@ -629,6 +656,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         globalAttachments: [...savedPlanState.current.globalAttachments],
         markdown: savedPlanState.current.markdown,
         isConverted: !!sourceConverted,
+        codeLanguage: savedPlanState.current.codeLanguage,
       });
     }
     if (linkedDoc) {
@@ -637,6 +665,7 @@ export function useLinkedDoc(options: UseLinkedDocOptions): UseLinkedDocReturn {
         globalAttachments: [...globalAttachments],
         markdown: getDocumentMarkdown?.(linkedDoc.filepath, linkedDoc.markdown) ?? linkedDoc.markdown,
         isConverted: linkedDoc.isConverted,
+        codeLanguage: linkedDoc.codeLanguage ?? null,
       });
     }
     return result;
