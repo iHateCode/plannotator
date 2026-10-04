@@ -160,6 +160,7 @@ export const CODE_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
 	".h": "c",
 	".cpp": "cpp",
 	// "text" is Shiki's plain language: monospace, no colour, text preserved exactly.
+	".env.example": "dotenv",
 	".txt": "text",
 	".log": "text",
 };
@@ -170,7 +171,9 @@ export function codeLanguageForPath(
 	codeExtensions: readonly string[] = [],
 ): string | null {
 	if (codeExtensions.length === 0) return null;
-	const match = /\.[A-Za-z0-9]+$/.exec(input.trim());
+	const trimmed = input.trim();
+	// `.env.example` is two dots deep, so it is matched before the one-dot rule.
+	const match = /\.env\.example$/i.exec(trimmed) ?? /\.[A-Za-z0-9]+$/.exec(trimmed);
 	if (!match) return null;
 	const ext = match[0].toLowerCase();
 	return codeExtensions.includes(ext) ? CODE_LANGUAGE_BY_EXTENSION[ext] ?? null : null;
@@ -282,7 +285,8 @@ export function normalizeCodeExtensions(value: unknown): string[] {
 		if (typeof entry !== "string") continue;
 		const ext = entry.trim().toLowerCase();
 		if (!CONFIGURABLE_EXTENSION_RE.test(ext)) continue;
-		if (isDeniedMarkdownExtension(ext)) continue;
+		// `.env.example` is the secret-free template, the one dotenv name allowed.
+		if (ext !== ".env.example" && isDeniedMarkdownExtension(ext)) continue;
 		if (!(ext in CODE_LANGUAGE_BY_EXTENSION)) continue;
 		if (result.includes(ext)) continue;
 		result.push(ext);

@@ -104,3 +104,17 @@ describe("plain text files opted in as monospace", () => {
 		expect(codeLanguageForPath("notes.txt", [])).toBeNull();
 	});
 });
+
+describe(".env.example as code, real dotenv files still denied", () => {
+	test(".env.example draws as dotenv when listed", () => {
+		expect(normalizeCodeExtensions([".env.example"])).toEqual([".env.example"]);
+		expect(codeLanguageForPath("sprintmetrics/.env.example", [".env.example"])).toBe("dotenv");
+		expect(codeLanguageForPath("sprintmetrics/.env.example", [])).toBeNull();
+	});
+
+	test("real dotenv files are still refused", () => {
+		expect(normalizeCodeExtensions([".env", ".env.local", ".prod.env", ".env.production"])).toEqual([]);
+		expect(codeLanguageForPath("app/.env", [".env"])).toBeNull();
+		expect(codeLanguageForPath("app/.env.local", [".env.local"])).toBeNull();
+	});
+});
