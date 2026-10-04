@@ -159,6 +159,9 @@ export const CODE_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
 	".c": "c",
 	".h": "c",
 	".cpp": "cpp",
+	// "text" is Shiki's plain language: monospace, no colour, text preserved exactly.
+	".txt": "text",
+	".log": "text",
 };
 
 /** The Shiki language for `input` when it is an opted-in code extension, else null. */

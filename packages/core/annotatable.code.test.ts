@@ -96,3 +96,11 @@ describe("larger language set and list cap", () => {
 		expect(normalizeCodeExtensions(all)).toEqual(all);
 	});
 });
+
+describe("plain text files opted in as monospace", () => {
+	test(".txt and .log use the plain `text` language", () => {
+		expect(codeLanguageForPath("notes.txt", [".txt"])).toBe("text");
+		expect(codeLanguageForPath("app.log", [".log"])).toBe("text");
+		expect(codeLanguageForPath("notes.txt", [])).toBeNull();
+	});
+});
