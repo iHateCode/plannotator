@@ -133,6 +133,32 @@ export const CODE_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
 	".rs": "rust",
 	".java": "java",
 	".rb": "ruby",
+	".yml": "yaml",
+	".yaml": "yaml",
+	".json": "json",
+	".jsonc": "jsonc",
+	".toml": "toml",
+	".xml": "xml",
+	".kt": "kotlin",
+	".kts": "kotlin",
+	".php": "php",
+	".swift": "swift",
+	".vue": "vue",
+	".mjs": "javascript",
+	".cjs": "javascript",
+	".feature": "gherkin",
+	".twig": "twig",
+	".dart": "dart",
+	".groovy": "groovy",
+	".gradle": "groovy",
+	".proto": "protobuf",
+	".tf": "terraform",
+	".ps1": "powershell",
+	".less": "less",
+	".astro": "astro",
+	".c": "c",
+	".h": "c",
+	".cpp": "cpp",
 };
 
 /** The Shiki language for `input` when it is an opted-in code extension, else null. */
@@ -198,6 +224,8 @@ const MAX_CONFIGURABLE_EXTENSION_LENGTH = 24;
 
 /** Most configured extensions kept, so a pathological config cannot bloat the regexes. */
 const MAX_CONFIGURABLE_EXTENSIONS = 32;
+/** `codeExtensions` has its own, larger cap: its entries are drawn from the built-in language table, so the list cannot grow past the table. */
+const MAX_CODE_EXTENSIONS = 64;
 
 function escapeRegExp(input: string): string {
 	return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -247,7 +275,7 @@ export function normalizeCodeExtensions(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	const result: string[] = [];
 	for (const entry of value) {
-		if (result.length >= MAX_CONFIGURABLE_EXTENSIONS) break;
+		if (result.length >= MAX_CODE_EXTENSIONS) break;
 		if (typeof entry !== "string") continue;
 		const ext = entry.trim().toLowerCase();
 		if (!CONFIGURABLE_EXTENSION_RE.test(ext)) continue;

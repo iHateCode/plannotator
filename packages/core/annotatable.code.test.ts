@@ -66,3 +66,33 @@ describe("predicates and frontmatter honour code extensions", () => {
 		expect(shouldStripFrontmatter("a.sh", [".sh"], [".sh"])).toBe(false);
 	});
 });
+
+describe("data and config files opted in as code", () => {
+	test("a built-in document type listed in codeExtensions draws as code, not Markdown", () => {
+		expect(isAnnotatableTextPath("pipeline.yml")).toBe(true);
+		expect(codeLanguageForPath("pipeline.yml", [".yml"])).toBe("yaml");
+		expect(codeLanguageForPath("package.json", [".json"])).toBe("json");
+		expect(codeLanguageForPath("Cargo.toml", [".toml"])).toBe("toml");
+		expect(codeLanguageForPath("layout.xml", [".xml"])).toBe("xml");
+	});
+
+	test("without the opt-in these stay Markdown-rendered documents", () => {
+		expect(codeLanguageForPath("pipeline.yml", [])).toBeNull();
+		expect(codeLanguageForPath("pipeline.yml", [".cs"])).toBeNull();
+	});
+});
+
+describe("larger language set and list cap", () => {
+	test("kotlin, php, swift and vue map to their languages", () => {
+		expect(codeLanguageForPath("Main.kt", [".kt"])).toBe("kotlin");
+		expect(codeLanguageForPath("index.php", [".php"])).toBe("php");
+		expect(codeLanguageForPath("App.swift", [".swift"])).toBe("swift");
+		expect(codeLanguageForPath("Page.vue", [".vue"])).toBe("vue");
+	});
+
+	test("every table key survives normalisation together, beyond the markdown cap of 32", () => {
+		const all = Object.keys(CODE_LANGUAGE_BY_EXTENSION);
+		expect(all.length).toBeGreaterThan(32);
+		expect(normalizeCodeExtensions(all)).toEqual(all);
+	});
+});
