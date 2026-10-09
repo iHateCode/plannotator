@@ -42,6 +42,9 @@ export interface SharePayload {
  * diagram block. This is deliberately smaller than adding a render-mode flag
  * (`r: 'html'`'s sibling): the portal needs no change at all.
  *
+ * A whole-file source (`renderAs: 'code'`) travels the same way, fenced in its
+ * language, so the portal draws it as one highlighted code block.
+ *
  * Diagram comments themselves still degrade to text comments in a share link,
  * exactly as they do today — `diagramAnchor` is dropped like `htmlAnchor`
  * (see sharing.multiTarget.test.ts).
@@ -49,8 +52,18 @@ export interface SharePayload {
 export function shareableDocumentMarkdown(
   markdown: string,
   renderAs: DocumentRenderAs | undefined,
+  codeLanguage?: string | null,
 ): string {
-  if (!isDiagramRenderKind(renderAs) || markdown === '') return markdown;
+  if (markdown === '') return markdown;
+  if (renderAs === 'code' && codeLanguage) {
+    // A source file can contain any backtick run, so the fence is one longer
+    // than the longest run in the file and never shorter than three.
+    let longestRun = 2;
+    for (const run of markdown.match(/`+/g) ?? []) longestRun = Math.max(longestRun, run.length);
+    const fence = '`'.repeat(longestRun + 1);
+    return `${fence}${codeLanguage}\n${markdown.replace(/\n+$/, '')}\n${fence}`;
+  }
+  if (!isDiagramRenderKind(renderAs)) return markdown;
   const language = renderAs === 'graphviz' ? 'dot' : 'mermaid';
   // A diagram source can itself contain a ``` run only in a comment/label;
   // a four-backtick fence keeps such a body intact.

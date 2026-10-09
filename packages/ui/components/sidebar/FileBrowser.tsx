@@ -45,9 +45,9 @@ interface AggregateWorkspaceChange {
   files: number;
 }
 
-// Display-name stripping only — deliberately narrower than the annotatable
-// set. Config files (config.yaml vs config.json) keep their extensions so
-// same-named siblings stay distinguishable in the tree.
+// Search still matches these document names with or without the extension.
+// The tree itself shows the full filename, so index.html and a folder named
+// pages stay distinct from pages.html.
 const FILE_EXTENSION_RE = /\.(mdx?|txt|html?)$/i;
 
 function normalizeFilterText(value: string): string {
@@ -315,7 +315,7 @@ const TreeNode: React.FC<{
     );
   }
 
-  const displayName = node.name.replace(/\.(mdx?|txt|html?)$/i, "");
+  const displayName = node.name;
   const lookupCandidates = getPathLookupCandidates(absolutePath, node.path, workspaceStatus);
   const fileCount = getPathMapValue(annotationCounts, lookupCandidates) ?? 0;
   const isHighlighted = pathSetHas(highlightedFiles, lookupCandidates);

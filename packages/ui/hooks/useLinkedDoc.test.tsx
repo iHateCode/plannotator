@@ -30,6 +30,7 @@ function LinkedDocHarness(props: { onLatest: (v: UseLinkedDocReturn) => void }) 
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [globalAttachments, setGlobalAttachments] = useState<ImageAttachment[]>([]);
   const [renderAs, setRenderAs] = useState<DocumentRenderAs>('markdown');
+  const [codeLanguage, setCodeLanguage] = useState<string | null>(null);
   const [rawHtml, setRawHtml] = useState('');
   const [shareHtml, setShareHtml] = useState('');
   const viewerRef = useRef<ViewerHandle | null>(noopViewerHandle);
@@ -44,6 +45,8 @@ function LinkedDocHarness(props: { onLatest: (v: UseLinkedDocReturn) => void }) 
     setSelectedAnnotationId,
     setGlobalAttachments,
     renderAs,
+    codeLanguage,
+    setCodeLanguage,
     rawHtml,
     shareHtml,
     setRenderAs,

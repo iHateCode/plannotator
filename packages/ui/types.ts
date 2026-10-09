@@ -12,7 +12,7 @@ export type { DiagramRenderKind } from '@plannotator/core/annotatable';
  * .dot/.gv) that render as ONE diagram through the same engine a ```mermaid
  * fence uses — see diagramDocumentBlocks in utils/parser.
  */
-export type DocumentRenderAs = 'markdown' | 'html' | DiagramRenderKind;
+export type DocumentRenderAs = 'markdown' | 'html' | 'code' | DiagramRenderKind;
 
 export enum AnnotationType {
   DELETION = 'DELETION',
@@ -216,6 +216,11 @@ export interface Block {
    * `(lines a–b)` label.
    */
   diagramSourceLineOffset?: number;
+  /**
+   * True when `content` is a whole source file whose line 1 is `startLine`, so
+   * an annotation's own line is found by counting newlines in `content`.
+   */
+  lineAddressable?: boolean;
 }
 
 export interface DiffResult {

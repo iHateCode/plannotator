@@ -1,4 +1,5 @@
 import type { SourceSaveCapability } from '@plannotator/shared/source-save';
+import type { DocumentRenderAs } from '@plannotator/ui/types';
 
 type EnabledSourceSaveCapability = Extract<SourceSaveCapability, { enabled: true }>;
 
@@ -19,7 +20,7 @@ interface SourceDocumentResponse extends HtmlVersionDiffFields {
   rawHtml?: string;
   filepath?: string;
   sourceSave?: SourceSaveCapability;
-  renderAs?: 'markdown' | 'html';
+  renderAs?: DocumentRenderAs;
 }
 
 type SourceDocumentFetchResult =

@@ -25,6 +25,8 @@ import {
 	buildAnnotatableDocRegex,
 	buildAnnotatableExtensionsHint,
 	buildAnnotatableTextRegex,
+	codeLanguageForPath,
+	normalizeCodeExtensions,
 	isAnnotatableDocPath as isAnnotatableDocPathWith,
 	isAnnotatableTextPath as isAnnotatableTextPathWith,
 	normalizeMarkdownExtensions,
@@ -56,24 +58,38 @@ export function getExtraMarkdownExtensions(config?: PlannotatorConfig): string[]
 	return cached;
 }
 
+let cachedCode: string[] | null = null;
+
+export function getCodeExtensions(config?: PlannotatorConfig): string[] {
+	if (config) return normalizeCodeExtensions(config.codeExtensions);
+	if (cachedCode === null) cachedCode = normalizeCodeExtensions(loadConfig().codeExtensions);
+	return cachedCode;
+}
+
+/** The Shiki language for `path` when its extension is opted in via `codeExtensions`, else null. */
+export function codeLanguageFor(path: string): string | null {
+	return codeLanguageForPath(path, getCodeExtensions());
+}
+
 /** Drop the memo so the next read re-reads `config.json`. Tests only. */
 export function resetMarkdownExtensionsCache(): void {
 	cached = null;
+	cachedCode = null;
 }
 
 /** Plain-text (markdown-rendered) matcher including the configured extras. */
 export function getAnnotatableTextRegex(): RegExp {
-	return buildAnnotatableTextRegex(getExtraMarkdownExtensions());
+	return buildAnnotatableTextRegex(getExtraMarkdownExtensions(), getCodeExtensions());
 }
 
 /** Plain-text + raw-HTML matcher including the configured extras. */
 export function getAnnotatableDocRegex(): RegExp {
-	return buildAnnotatableDocRegex(getExtraMarkdownExtensions());
+	return buildAnnotatableDocRegex(getExtraMarkdownExtensions(), getCodeExtensions());
 }
 
 /** Accepted-set hint for error messages, including the configured extras. */
 export function getAnnotatableExtensionsHint(): string {
-	return buildAnnotatableExtensionsHint(getExtraMarkdownExtensions());
+	return buildAnnotatableExtensionsHint([...getExtraMarkdownExtensions(), ...getCodeExtensions()]);
 }
 
 /**
@@ -82,15 +98,15 @@ export function getAnnotatableExtensionsHint(): string {
  * core predicate of the same name — server code should import this one.
  */
 export function isAnnotatableTextPath(input: string): boolean {
-	return isAnnotatableTextPathWith(input, getExtraMarkdownExtensions());
+	return isAnnotatableTextPathWith(input, getExtraMarkdownExtensions(), getCodeExtensions());
 }
 
 /** True when annotate can open `input` at all, honoring the configured extras. */
 export function isAnnotatableDocPath(input: string): boolean {
-	return isAnnotatableDocPathWith(input, getExtraMarkdownExtensions());
+	return isAnnotatableDocPathWith(input, getExtraMarkdownExtensions(), getCodeExtensions());
 }
 
 /** Frontmatter stripping decision honoring the configured extras (extras are markdown). */
 export function shouldStripFrontmatter(path: string | null | undefined): boolean {
-	return shouldStripFrontmatterWith(path, getExtraMarkdownExtensions());
+	return shouldStripFrontmatterWith(path, getExtraMarkdownExtensions(), getCodeExtensions());
 }

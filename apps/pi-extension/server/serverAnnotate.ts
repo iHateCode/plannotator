@@ -1,4 +1,4 @@
-import { annotateDiagramRenderKind } from "../generated/annotatable.ts";
+import { annotateCodeLanguage, annotateDiagramRenderKind } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
@@ -64,7 +64,7 @@ import {
 	type FolderAnnotateHistory,
 } from "./reference.ts";
 import { closeAllFileBrowserWatchers, handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
-import { getExtraMarkdownExtensions, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
+import { getCodeExtensions, getExtraMarkdownExtensions, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
 import { createExternalAnnotationHandler } from "./external-annotations.ts";
 import { createNodeAgentTerminalBridge } from "./agent-terminal.ts";
 import {
@@ -340,6 +340,15 @@ export async function startAnnotateServer(options: {
 		mode: options.mode || "annotate",
 		renderHtml: options.renderHtml,
 		sourceConverted: options.sourceConverted,
+	});
+	// Opted-in source files (`codeExtensions`) render as one highlighted code
+	// block; `renderAs: 'code'` plus `codeLanguage` tell the editor.
+	const codeLanguage = annotateCodeLanguage({
+		filePath: options.filePath,
+		mode: options.mode || "annotate",
+		renderHtml: options.renderHtml,
+		sourceConverted: options.sourceConverted,
+		codeExtensions: getCodeExtensions(),
 	});
 	const clientLease = createAnnotateClientLeaseTracker(
 		() => decision.settle({ feedback: "", annotations: [], exit: true }),
@@ -829,7 +838,10 @@ export async function startAnnotateServer(options: {
 				clientLease: options.clientLeaseSupported
 					? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
 					: { enabled: false as const },
-				renderAs: displayRawHtml ? 'html' : diagramRenderKind ?? 'markdown',
+				renderAs: displayRawHtml
+					? 'html'
+					: diagramRenderKind ?? (codeLanguage ? 'code' : 'markdown'),
+				codeLanguage: codeLanguage ?? undefined,
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
 				convertHtml: options.convertHtml ?? false,

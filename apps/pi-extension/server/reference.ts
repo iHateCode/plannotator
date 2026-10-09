@@ -33,6 +33,7 @@ import {
 	resolveUserPath,
 	warmFileListCache,
 	getAnnotatableDocRegex,
+	codeLanguageFor,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "../generated/resolve-file.ts";
@@ -173,7 +174,7 @@ function applyDocOptions<T extends Record<string, unknown>>(
 		typeof data.filepath === "string" &&
 		// Diagram sources (.mmd/.dot) take the markdown branch's raw text, so
 		// they keep per-file version history exactly like a .txt.
-		(data.renderAs === "markdown" || isDiagramRenderKind(data.renderAs)) &&
+		(data.renderAs === "markdown" || data.renderAs === "code" || isDiagramRenderKind(data.renderAs)) &&
 		data.isConverted !== true &&
 		typeof data.markdown === "string" &&
 		isAnnotatableTextPath(data.filepath)
@@ -276,7 +277,19 @@ function readDocument(res: Res, path: string, convert: boolean, options: HandleD
 		// `renderAs`; the editor renders it through the same DiagramBlock a
 		// ```mermaid fence uses instead of the markdown pipeline.
 		const diagramKind = diagramRenderKindForPath(path);
-		jsonDoc(res, { markdown: snapshot.text, filepath: path, renderAs: diagramKind ?? "markdown" }, options, undefined, snapshot);
+		const codeLanguage = diagramKind ? null : codeLanguageFor(path);
+		jsonDoc(
+			res,
+			{
+				markdown: snapshot.text,
+				filepath: path,
+				renderAs: diagramKind ?? (codeLanguage ? "code" : "markdown"),
+				...(codeLanguage ? { codeLanguage } : {}),
+			},
+			options,
+			undefined,
+			snapshot,
+		);
 	} catch {
 		json(res, { error: "Failed to read file" }, 500);
 	}

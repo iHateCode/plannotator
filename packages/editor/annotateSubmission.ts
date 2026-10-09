@@ -6,6 +6,7 @@ import type {
   ImageAttachment,
 } from "@plannotator/ui/types";
 import {
+  codeDocumentBlocks,
   exportAnnotations,
   exportCodeFileAnnotations,
   exportEditorAnnotations,
@@ -136,9 +137,11 @@ export function buildCompleteAnnotateFeedback(
           enriched.set(filepath, entry.markdown
             ? {
                 ...entry,
-                blocks: parseMarkdownToBlocks(entry.markdown, {
-                  frontmatter: shouldStripFrontmatter(filepath),
-                }),
+                blocks: entry.codeLanguage
+                  ? codeDocumentBlocks(entry.markdown, entry.codeLanguage)
+                  : parseMarkdownToBlocks(entry.markdown, {
+                      frontmatter: shouldStripFrontmatter(filepath),
+                    }),
               }
             : entry);
         }

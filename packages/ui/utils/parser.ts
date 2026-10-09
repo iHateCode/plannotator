@@ -331,6 +331,25 @@ export const diagramDocumentBlocks = (text: string, kind: 'mermaid' | 'graphviz'
 ];
 
 /**
+ * The block list for a whole source file (`plannotator annotate Foo.cs` with
+ * `.cs` in `codeExtensions`): ONE ordinary code block in `language`, drawn by
+ * CodeBlock. `lineAddressable` lets the export label a comment with its own
+ * file line instead of the whole block's range.
+ */
+export const codeDocumentBlocks = (text: string, language: string): Block[] => [
+  {
+    id: 'block-0',
+    type: 'code',
+    content: text,
+    language,
+    order: 1,
+    startLine: 1,
+    sourceLineCount: text === '' ? 0 : text.replace(/\n$/, '').split('\n').length,
+    lineAddressable: true,
+  },
+];
+
+/**
  * A simplified markdown parser that splits content into linear blocks.
  * For a production app, we would use a robust AST walker (remark),
  * but for this demo, we want predictable text-anchoring.
@@ -943,6 +962,15 @@ const lineLabelForAnnotation = (blocks: Block[], ann: any): string | null => {
   if (typeof ann.blockId === 'string' && ann.blockId.startsWith('diff-block-')) return null;
   const block = blocks.find(b => b.id === ann.blockId);
   if (!block || typeof block.startLine !== 'number') return null;
+  if (block.lineAddressable && typeof ann.originalText === 'string' && ann.originalText.length > 0) {
+    const at = block.content.indexOf(ann.originalText);
+    if (at >= 0) {
+      const countNewlines = (value: string) => value.split('\n').length - 1;
+      const first = block.startLine + countNewlines(block.content.slice(0, at));
+      const last = first + countNewlines(ann.originalText.replace(/\n+$/, ''));
+      return last === first ? `line ${first}` : `lines ${first}–${last}`;
+    }
+  }
   const end = blockEndLine(block);
   if (end <= block.startLine) return `line ${block.startLine}`;
   return `lines ${block.startLine}–${end}`;
@@ -1214,6 +1242,7 @@ export interface LinkedDocAnnotationEntry {
   markdown?: string;
   blocks?: Block[];
   isConverted?: boolean;
+  codeLanguage?: string | null;
 }
 
 export const exportLinkedDocAnnotations = (

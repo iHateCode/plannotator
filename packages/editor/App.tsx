@@ -20,7 +20,7 @@ import { documentRendersHtml, htmlAssetRouteFromDocument, resolveHtmlLinkIntent 
 import { ImageLightbox } from '@plannotator/ui/components/ImageLightbox';
 import { createPortal } from 'react-dom';
 import { annotateFileFeedback, annotateMessageFeedback, wrapFeedbackForClipboard, type AnnotateFeedbackTemplates } from '@plannotator/shared/feedback-templates';
-import { diagramDocumentBlocks, parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
+import { codeDocumentBlocks, diagramDocumentBlocks, parseMarkdownToBlocks, exportAnnotations, exportLinkedDocAnnotations, exportEditorAnnotations, exportCodeFileAnnotations, exportMessageAnnotations, extractFrontmatter, wrapFeedbackForAgent, Frontmatter, type LinkedDocAnnotationEntry, type MessageAnnotationEntry } from '@plannotator/ui/utils/parser';
 import { primeSkillCatalog, primeSkillContentsForExport } from '@plannotator/ui/utils/skillCatalog';
 import { Viewer, ViewerHandle } from '@plannotator/ui/components/Viewer';
 import type { AnnotationRestoreReport } from '@plannotator/ui/hooks/useAnnotationHighlighter';
@@ -430,11 +430,11 @@ function annotationOwnsHighlight(annotation: Annotation): boolean {
  * with that path's frontmatter rule. Used for the cached linked/folder docs
  * the cross-file export renders.
  */
-const blocksForDocument = (filepath: string, text: string): Block[] => {
+const blocksForDocument = (filepath: string, text: string, codeLanguage: string | null): Block[] => {
   const kind = diagramRenderKindForPath(filepath);
-  return kind !== null
-    ? diagramDocumentBlocks(text, kind)
-    : parseMarkdownToBlocks(text, { frontmatter: shouldStripFrontmatter(filepath) });
+  if (kind !== null) return diagramDocumentBlocks(text, kind);
+  if (codeLanguage) return codeDocumentBlocks(text, codeLanguage);
+  return parseMarkdownToBlocks(text, { frontmatter: shouldStripFrontmatter(filepath) });
 };
 
 /** Hint shown following the cursor while hovering a sidebar/panel resize handle. */
@@ -474,6 +474,7 @@ const App: React.FC = () => {
   // source (.mmd/.mermaid/.dot/.gv) renders as ONE diagram block instead of
   // being parsed as markdown.
   const [renderAs, setRenderAs] = useState<DocumentRenderAs>('markdown');
+  const [codeLanguage, setCodeLanguage] = useState<string | null>(null);
   const diagramDocumentKind = isDiagramRenderKind(renderAs) ? renderAs : null;
   const activeParseDocPath = linkedDocParsePath ?? sourceFilePath;
   // Frontmatter stripping is a markdown convention — for non-markdown
@@ -492,8 +493,10 @@ const App: React.FC = () => {
     () =>
       diagramDocumentKind !== null
         ? diagramDocumentBlocks(displayedMarkdown, diagramDocumentKind)
-        : parseMarkdownToBlocks(displayedMarkdown, { frontmatter: parseFrontmatter }),
-    [diagramDocumentKind, displayedMarkdown, parseFrontmatter],
+        : renderAs === 'code' && codeLanguage
+          ? codeDocumentBlocks(displayedMarkdown, codeLanguage)
+          : parseMarkdownToBlocks(displayedMarkdown, { frontmatter: parseFrontmatter }),
+    [diagramDocumentKind, renderAs, codeLanguage, displayedMarkdown, parseFrontmatter],
   );
   const [showExport, setShowExport] = useState(false);
   const [showImport, setShowImport] = useState(false);
@@ -1324,7 +1327,7 @@ const App: React.FC = () => {
     editableDocuments.setActiveKey(restoreKey);
   }, [editableDocuments]);
 
-  const handleLinkedDocumentLoaded = useCallback((doc: { markdown?: string; filepath?: string; renderAs?: 'markdown' | 'html'; sourceSave?: SourceSaveCapability }) => {
+  const handleLinkedDocumentLoaded = useCallback((doc: { markdown?: string; filepath?: string; renderAs?: DocumentRenderAs; sourceSave?: SourceSaveCapability }) => {
     if (annotateSource !== 'folder') {
       if (activeEditableDocument?.sourceSave?.enabled) {
         suspendedRootEditableKeyRef.current = activeEditableDocument.key;
@@ -1333,7 +1336,7 @@ const App: React.FC = () => {
       return undefined;
     }
 
-    if (doc.renderAs === 'html' || !doc.filepath || doc.markdown == null) {
+    if (doc.renderAs === 'html' || doc.renderAs === 'code' || !doc.filepath || doc.markdown == null) {
       editableDocuments.setActiveKey(null);
       return undefined;
     }
@@ -1371,7 +1374,7 @@ const App: React.FC = () => {
   const linkedDocHook = useLinkedDoc({
     markdown, annotations, selectedAnnotationId, globalAttachments,
     setMarkdown, setAnnotations, setSelectedAnnotationId, setGlobalAttachments,
-    renderAs, rawHtml, shareHtml, setRenderAs, setRawHtml, setShareHtml,
+    renderAs, codeLanguage, setCodeLanguage, rawHtml, shareHtml, setRenderAs, setRawHtml, setShareHtml,
     viewerRef, sidebar: linkedDocSidebar, sourceFilePath, sourceConverted,
     onBeforeNavigate: handleBeforeDocumentNavigation,
     onDocumentLoaded: handleLinkedDocumentLoaded,
@@ -1819,7 +1822,7 @@ const App: React.FC = () => {
       for (const [filepath, doc] of state.linkedDocSession.docs) {
         linkedDocs.set(filepath, {
           ...doc,
-          blocks: doc.markdown ? blocksForDocument(filepath, doc.markdown) : undefined,
+          blocks: doc.markdown ? blocksForDocument(filepath, doc.markdown, doc.codeLanguage ?? null) : undefined,
         });
       }
       return {
@@ -2290,7 +2293,7 @@ const App: React.FC = () => {
         if (entry.markdown) {
           enriched.set(filepath, {
             ...entry,
-            blocks: blocksForDocument(filepath, entry.markdown),
+            blocks: blocksForDocument(filepath, entry.markdown, entry.codeLanguage ?? null),
           });
         }
       }
@@ -2353,8 +2356,9 @@ const App: React.FC = () => {
     clearShareLoadError,
   } = useSharing(
     // A diagram source ships fenced so the share portal's markdown parse
-    // renders the same diagram (see shareableDocumentMarkdown).
-    shareableDocumentMarkdown(markdown, renderAs),
+    // renders the same diagram, and a code file ships fenced in its language
+    // (see shareableDocumentMarkdown).
+    shareableDocumentMarkdown(markdown, renderAs, codeLanguage),
     allAnnotations,
     globalAttachments,
     setMarkdown,
@@ -3523,7 +3527,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'archive' | 'goal-setup'; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; codeLanguage?: string; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; planRevision?: number; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; isWSL?: boolean; markdownExtensions?: string[]; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean }; autoUpdateNotice?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Extra extensions the user registered as markdown (#1307) — the
@@ -3570,6 +3574,12 @@ const App: React.FC = () => {
           setShareHtml(data.shareHtml ?? '');
           setHtmlDiffHtml(data.diffHtml ?? null);
           setMarkdown('');
+        } else if (data.renderAs === 'code' && typeof data.plan === 'string' && data.codeLanguage) {
+          setRenderAs('code');
+          setCodeLanguage(data.codeLanguage);
+          const codeSource = data.plan.replace(/\r\n?/g, '\n');
+          setMarkdown(codeSource);
+          originalMarkdownRef.current = codeSource;
         } else if (isDiagramRenderKind(data.renderAs) && typeof data.plan === 'string') {
           // Whole-file diagram source: the body is the file's raw text and the
           // `blocks` memo turns it into one diagram block. No source editor

@@ -26,6 +26,7 @@ import {
   buildAnnotatableExtensionsHint,
 } from "@plannotator/shared/annotatable";
 import {
+  getCodeExtensions,
   getExtraMarkdownExtensions,
   MAX_ANNOTATABLE_FILE_BYTES,
   hasMarkdownFiles,
@@ -96,6 +97,7 @@ export async function resolveAnnotateTarget(options: {
   const { rawFilePath, projectRoot, noJina, renderMarkdown, forceApp = false, forceStatic = false } = options;
   const extraMarkdownExtensions =
     options.extraMarkdownExtensions ?? getExtraMarkdownExtensions();
+  const codeExtensions = getCodeExtensions();
   const log = options.log ?? ((line: string) => console.error(line));
 
   // Primary resolution strips the `@` reference marker; rawFilePath is
@@ -220,7 +222,7 @@ export async function resolveAnnotateTarget(options: {
   if (folderCandidate !== null) {
     const resolvedArg = resolveUserPath(folderCandidate, projectRoot);
     // Folder annotation mode (markdown/plain text/config + HTML files)
-    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex(extraMarkdownExtensions))) {
+    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex([...extraMarkdownExtensions, ...codeExtensions]))) {
       return {
         ok: false,
         notFound: false,
@@ -275,9 +277,9 @@ export async function resolveAnnotateTarget(options: {
 
   // Single markdown/plain-text file annotation mode
   // Strip-first with literal-@ fallback (scoped-package-style names).
-  let resolved = resolveMarkdownFile(filePath, projectRoot, { extraMarkdownExtensions });
+  let resolved = resolveMarkdownFile(filePath, projectRoot, { extraMarkdownExtensions, codeExtensions });
   if (resolved.kind === "not_found" && rawFilePath !== filePath) {
-    resolved = resolveMarkdownFile(rawFilePath, projectRoot, { extraMarkdownExtensions });
+    resolved = resolveMarkdownFile(rawFilePath, projectRoot, { extraMarkdownExtensions, codeExtensions });
   }
 
   if (resolved.kind === "ambiguous") {
@@ -302,7 +304,7 @@ export async function resolveAnnotateTarget(options: {
         notFound: false,
         message:
           `File type not supported: ${ext}\n` +
-          `Supported types: ${buildAnnotatableExtensionsHint(extraMarkdownExtensions)}\n` +
+          `Supported types: ${buildAnnotatableExtensionsHint([...extraMarkdownExtensions, ...codeExtensions])}\n` +
           `For code review, use: plannotator review [DIRECTORY]`,
       };
     }
