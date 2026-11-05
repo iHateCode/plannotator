@@ -32,7 +32,7 @@ import {
   parseAnnotateBundle,
   type AnnotateBundleFile,
 } from '@plannotator/shared/annotate-bundle';
-import { setExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtensions';
+import { getCodeExtensions, setCodeExtensions, setExtraMarkdownExtensions } from '@plannotator/ui/utils/markdownExtensions';
 import { repoLabel } from '@plannotator/ui/utils/repoLabel';
 import { installPlainTextPaste } from '@plannotator/ui/utils/pasteInsert';
 import { documentRendersHtml, htmlAssetRouteFromDocument, resolveHtmlLinkIntent } from '@plannotator/ui/utils/htmlLinkNavigation';
@@ -561,7 +561,7 @@ const App: React.FC = () => {
   // Frontmatter stripping is a markdown convention — for non-markdown
   // annotatable sources (.yaml/.txt/…) a leading `--- … ---` pair is real
   // content (multi-document YAML), so it must survive parsing.
-  const parseFrontmatter = shouldStripFrontmatter(activeParseDocPath);
+  const parseFrontmatter = shouldStripFrontmatter(activeParseDocPath, [], getCodeExtensions());
   const parseFrontmatterRef = useRef(parseFrontmatter);
   useEffect(() => {
     parseFrontmatterRef.current = parseFrontmatter;
@@ -3952,7 +3952,7 @@ const App: React.FC = () => {
         if (!res.ok) throw new Error('Not in API mode');
         return res.json();
       })
-      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; title?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; planPath?: string; planFilePath?: string; isWSL?: boolean; notion?: boolean; markdownExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; updateCheckFailing?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
+      .then((data: { plan: string; origin?: Origin; mode?: 'annotate' | 'annotate-last' | 'annotate-folder' | 'annotate-app' | 'annotate-bundle' | 'archive' | 'goal-setup'; bundle?: unknown; goalSetup?: GoalSetupBundle; filePath?: string; appUrl?: string; targetUrl?: string; liveToken?: string; sourceInfo?: string; title?: string; sourceConverted?: boolean; sourceSave?: SourceSaveCapability; gate?: boolean; approvalNotesSupported?: boolean; clientLease?: AnnotateClientLeaseConfig; renderAs?: DocumentRenderAs; rawHtml?: string; shareHtml?: string; diffHtml?: string; convertHtml?: boolean; sharingEnabled?: boolean; shareBaseUrl?: string; pasteApiUrl?: string; repoInfo?: { display: string; branch?: string; host?: string }; previousPlan?: string | null; versionInfo?: { version: number; totalVersions: number; project: string }; liveVersions?: boolean; planRevision?: number; serverSession?: string; archivePlans?: ArchivedPlan[]; projectRoot?: string; planDir?: string; planPath?: string; planFilePath?: string; isWSL?: boolean; notion?: boolean; markdownExtensions?: string[]; codeExtensions?: string[]; documentDrafts?: boolean; serverConfig?: { displayName?: string; gitUser?: string; autoUpdate?: boolean; autoUpdateEnv?: boolean; updateCheck?: boolean; updateCheckEnv?: boolean }; autoUpdateNotice?: unknown; updateAvailable?: unknown; updateCheckFailing?: unknown; autoUpdateSupported?: boolean; autoUpdateActive?: boolean; recentMessages?: PickerMessage[]; agentTerminal?: AgentTerminalCapability; feedbackTemplates?: AnnotateFeedbackTemplates }) => {
         // Initialize config store with server-provided values (config file > cookie > default)
         configStore.init(data.serverConfig);
         // Save to Notion: offered only when the server has NOTION_TOKEN and the session is local.
@@ -3963,6 +3963,7 @@ const App: React.FC = () => {
         // renderer needs them to treat links to sibling `.livemd`-style docs
         // as openable local documents rather than external links.
         setExtraMarkdownExtensions(data.markdownExtensions);
+        setCodeExtensions(data.codeExtensions);
         // Session-level force-markdown preference (--markdown); threaded into folder/linked
         // /api/doc requests so on-demand HTML files convert too.
         setConvertHtml(data.convertHtml ?? false);

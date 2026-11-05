@@ -15,7 +15,7 @@ import { existsSync, readdirSync, type Dirent } from "fs";
 import { readdir } from "node:fs/promises";
 
 import { buildAnnotatableTextRegex } from "./annotatable";
-import { getExtraMarkdownExtensions } from "./markdown-extensions";
+import { getCodeExtensions, getExtraMarkdownExtensions } from "./markdown-extensions";
 import { CODE_FILE_REGEX as CODE_FILE_BASENAME_REGEX } from "./code-file";
 export { CODE_FILE_REGEX, isCodeFilePath } from "./code-file";
 export { MAX_ANNOTATABLE_FILE_BYTES } from "./annotatable";
@@ -30,6 +30,7 @@ export {
 	getAnnotatableTextRegex,
 	getAnnotatableDocRegex,
 	getAnnotatableExtensionsHint,
+	getCodeExtensions,
 	getExtraMarkdownExtensions,
 	isAnnotatableTextPath,
 	isAnnotatableDocPath,
@@ -555,11 +556,15 @@ function resolveMarkdownFileCore(
 export function resolveMarkdownFile(
 	input: string,
 	projectRoot: string,
-	options?: { extraMarkdownExtensions?: readonly string[] },
+	options?: { extraMarkdownExtensions?: readonly string[]; codeExtensions?: readonly string[] },
 ): ResolveResult {
 	const originalInput = input.trim();
 	const unquotedInput = stripWrappingQuotes(originalInput);
-	const extra = options?.extraMarkdownExtensions ?? getExtraMarkdownExtensions();
+	// Listed code extensions are accepted wherever a markdown extra is.
+	const extra = [
+		...(options?.extraMarkdownExtensions ?? getExtraMarkdownExtensions()),
+		...(options?.codeExtensions ?? getCodeExtensions()),
+	];
 
 	const primary = resolveMarkdownFileCore(unquotedInput, projectRoot, extra);
 	if (primary.kind === "found") {

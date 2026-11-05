@@ -23,6 +23,7 @@ import {
   type MessageAnnotationEntry,
 } from '@plannotator/ui/utils/parser';
 import { parseAsciidocToBlocks } from '@plannotator/ui/utils/asciidocParser';
+import { getCodeExtensions } from '@plannotator/ui/utils/markdownExtensions';
 import { codeDocumentLanguage, documentRenderKindForPath, isDiagramRenderKind, shouldStripFrontmatter } from '@plannotator/shared/annotatable';
 
 /**
@@ -39,13 +40,13 @@ export const blocksForRenderAs = (
 ): Block[] => {
   if (isDiagramRenderKind(renderAs)) return diagramDocumentBlocks(text, renderAs);
   if (renderAs === 'asciidoc') return parseAsciidocToBlocks(text);
-  if (renderAs === 'code') return codeDocumentBlocks(text, codeDocumentLanguage(path));
+  if (renderAs === 'code') return codeDocumentBlocks(text, codeDocumentLanguage(path, getCodeExtensions()));
   return parseMarkdownToBlocks(text, { frontmatter });
 };
 
 /** Blocks for a document identified by path, with that path's frontmatter rule. */
 export const blocksForDocument = (filepath: string, text: string): Block[] =>
-  blocksForRenderAs(text, documentRenderKindForPath(filepath) ?? 'markdown', shouldStripFrontmatter(filepath), filepath);
+  blocksForRenderAs(text, documentRenderKindForPath(filepath, getCodeExtensions()) ?? 'markdown', shouldStripFrontmatter(filepath, [], getCodeExtensions()), filepath);
 
 /**
  * Merge local annotations with SSE-delivered external ones, dropping
@@ -108,7 +109,7 @@ export function resolveFeedbackSections(input: FeedbackSectionsInput): FeedbackS
     annotations = mergeExternalAnnotations(root.annotations, input.externalAnnotations);
     globalAttachments = root.globalAttachments;
     const markdown = root.markdown ?? '';
-    blocks = blocksForRenderAs(markdown, root.renderAs, shouldStripFrontmatter(input.sourceFilePath), input.sourceFilePath);
+    blocks = blocksForRenderAs(markdown, root.renderAs, shouldStripFrontmatter(input.sourceFilePath, [], getCodeExtensions()), input.sourceFilePath);
   }
 
   const order = input.bundleOrder ?? null;

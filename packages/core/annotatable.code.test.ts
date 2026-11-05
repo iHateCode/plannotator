@@ -5,6 +5,7 @@ import {
 	documentRenderKindForPath,
 	isAnnotatableTextPath,
 	isDocumentRenderKind,
+	normalizeCodeExtensions,
 	normalizeMarkdownExtensions,
 	shouldStripFrontmatter,
 } from "./annotatable";
@@ -82,5 +83,49 @@ describe("config and data files in the annotatable seam", () => {
 		// Extras (#1307) are markdown by definition; the built-ins win.
 		expect(normalizeMarkdownExtensions([".toml", ".yaml", ".livemd"])).toEqual([".livemd"]);
 		expect(documentRenderKindForPath("notebook.livemd")).toBeNull();
+	});
+});
+
+describe("codeExtensions: opt-in source files", () => {
+	test("an unlisted source file keeps upstream behaviour", () => {
+		expect(documentRenderKindForPath("/repo/Program.cs")).toBeNull();
+		expect(codeDocumentLanguage("/repo/Program.cs")).toBeUndefined();
+	});
+
+	test("a listed extension is code, drawn in its language", () => {
+		expect(documentRenderKindForPath("/repo/Program.cs", [".cs"])).toBe("code");
+		expect(codeDocumentLanguage("/repo/Program.CS", [".cs"])).toBe("csharp");
+		expect(codeDocumentLanguage("/repo/run.sh", [".sh"])).toBe("bash");
+		// Only listed ones: .sh listed does not make .py code.
+		expect(documentRenderKindForPath("/repo/a.py", [".sh"])).toBeNull();
+	});
+
+	test("a listed .txt is plain monospace code, not markdown", () => {
+		expect(documentRenderKindForPath("notes.txt", [".txt"])).toBe("code");
+		expect(codeDocumentLanguage("notes.txt", [".txt"])).toBeUndefined();
+		expect(shouldStripFrontmatter("notes.txt", [], [".txt"])).toBe(false);
+	});
+
+	test("listed code wins over a markdown extra, and never strips frontmatter", () => {
+		expect(shouldStripFrontmatter("a.cs", [".cs"], [".cs"])).toBe(false);
+		expect(shouldStripFrontmatter("a.cs", [".cs"])).toBe(true);
+	});
+
+	test("the session rule threads the list through", () => {
+		expect(annotateDocumentRenderKind({ filePath: "/repo/a.cs", codeExtensions: [".cs"] })).toBe("code");
+		expect(annotateDocumentRenderKind({ filePath: "https://x.dev/a.cs", codeExtensions: [".cs"] })).toBeNull();
+	});
+
+	test("normalizeCodeExtensions refuses what is not in the table, and dotenv files", () => {
+		expect(normalizeCodeExtensions([".CS", " .sh ", ".cs"])).toEqual([".cs", ".sh"]);
+		expect(normalizeCodeExtensions([".zzz", ".env", ".env.local", ".prod.env", "cs", 5, "*.cs"])).toEqual([]);
+		// Built-in code extensions need no listing.
+		expect(normalizeCodeExtensions([".yaml", ".log", ".env.example"])).toEqual([]);
+		expect(normalizeCodeExtensions("nope")).toEqual([]);
+	});
+
+	test("the accepted-extension predicates see listed extensions", () => {
+		expect(isAnnotatableTextPath("a.cs")).toBe(false);
+		expect(isAnnotatableTextPath("a.cs", [".cs"])).toBe(true);
 	});
 });

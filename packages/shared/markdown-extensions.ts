@@ -27,12 +27,13 @@ import {
 	buildAnnotatableTextRegex,
 	isAnnotatableDocPath as isAnnotatableDocPathWith,
 	isAnnotatableTextPath as isAnnotatableTextPathWith,
+	normalizeCodeExtensions,
 	normalizeMarkdownExtensions,
 	shouldStripFrontmatter as shouldStripFrontmatterWith,
 } from "./annotatable";
 import { loadConfig, type PlannotatorConfig } from "./config";
 
-export { normalizeMarkdownExtensions };
+export { normalizeCodeExtensions, normalizeMarkdownExtensions };
 
 /**
  * Resolve the configured extra markdown extensions from an explicit config
@@ -56,24 +57,42 @@ export function getExtraMarkdownExtensions(config?: PlannotatorConfig): string[]
 	return cached;
 }
 
+let cachedCode: string[] | null = null;
+
+/**
+ * Extensions listed in `codeExtensions`: annotate opens them as one highlighted
+ * code block (`renderAs: "code"`). Memoized per process like the markdown list.
+ */
+export function getCodeExtensions(config?: PlannotatorConfig): string[] {
+	if (config) return normalizeCodeExtensions(config.codeExtensions);
+	if (cachedCode === null) cachedCode = normalizeCodeExtensions(loadConfig().codeExtensions);
+	return cachedCode;
+}
+
+/** The configured extras that make a path accepted: markdown plus code. */
+function acceptedExtras(): string[] {
+	return [...getExtraMarkdownExtensions(), ...getCodeExtensions()];
+}
+
 /** Drop the memo so the next read re-reads `config.json`. Tests only. */
 export function resetMarkdownExtensionsCache(): void {
 	cached = null;
+	cachedCode = null;
 }
 
 /** Plain-text (markdown-rendered) matcher including the configured extras. */
 export function getAnnotatableTextRegex(): RegExp {
-	return buildAnnotatableTextRegex(getExtraMarkdownExtensions());
+	return buildAnnotatableTextRegex(acceptedExtras());
 }
 
 /** Plain-text + raw-HTML matcher including the configured extras. */
 export function getAnnotatableDocRegex(): RegExp {
-	return buildAnnotatableDocRegex(getExtraMarkdownExtensions());
+	return buildAnnotatableDocRegex(acceptedExtras());
 }
 
 /** Accepted-set hint for error messages, including the configured extras. */
 export function getAnnotatableExtensionsHint(): string {
-	return buildAnnotatableExtensionsHint(getExtraMarkdownExtensions());
+	return buildAnnotatableExtensionsHint(acceptedExtras());
 }
 
 /**
@@ -82,15 +101,15 @@ export function getAnnotatableExtensionsHint(): string {
  * core predicate of the same name — server code should import this one.
  */
 export function isAnnotatableTextPath(input: string): boolean {
-	return isAnnotatableTextPathWith(input, getExtraMarkdownExtensions());
+	return isAnnotatableTextPathWith(input, acceptedExtras());
 }
 
 /** True when annotate can open `input` at all, honoring the configured extras. */
 export function isAnnotatableDocPath(input: string): boolean {
-	return isAnnotatableDocPathWith(input, getExtraMarkdownExtensions());
+	return isAnnotatableDocPathWith(input, acceptedExtras());
 }
 
 /** Frontmatter stripping decision honoring the configured extras (extras are markdown). */
 export function shouldStripFrontmatter(path: string | null | undefined): boolean {
-	return shouldStripFrontmatterWith(path, getExtraMarkdownExtensions());
+	return shouldStripFrontmatterWith(path, getExtraMarkdownExtensions(), getCodeExtensions());
 }

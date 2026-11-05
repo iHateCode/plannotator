@@ -46,7 +46,9 @@
  *   below, so no config value can register it.
  * - Source-code extensions (.ts, .py, …) — those belong to the code-file
  *   link/popout system (`CODE_FILE_REGEX` in `code-file.ts`) and would also
- *   flood the annotate folder file browser.
+ *   flood the annotate folder file browser. They are opt-in per extension
+ *   through `codeExtensions` (see `CODE_LANGUAGE_BY_EXTENSION`) and then join
+ *   the `renderAs: "code"` family above.
  *
  * Note the overlap with `CODE_FILE_REGEX` (.yaml/.json/.toml/.ini/.xml appear
  * in both): a path's *rendering* depends on the surface. Code-file links
@@ -147,10 +149,47 @@ const CODE_DOCUMENT_LANGUAGES: ReadonlyArray<readonly [RegExp, string]> = [
  * The grammar a `renderAs: "code"` document is highlighted with, or undefined
  * for a file shown as plain monospace text.
  */
-export function codeDocumentLanguage(path: string | null | undefined): string | undefined {
+export function codeDocumentLanguage(
+	path: string | null | undefined,
+	codeExtra: readonly string[] = [],
+): string | undefined {
 	if (!path) return undefined;
 	const trimmed = path.trim();
-	return CODE_DOCUMENT_LANGUAGES.find(([re]) => re.test(trimmed))?.[1];
+	const builtin = CODE_DOCUMENT_LANGUAGES.find(([re]) => re.test(trimmed))?.[1];
+	if (builtin) return builtin;
+	return configuredCodeExtension(trimmed, codeExtra) ? configuredCodeLanguage(trimmed, codeExtra) : undefined;
+}
+
+/**
+ * Shiki grammar per EXTRA extension a user may list in `codeExtensions`; null
+ * draws the file as plain monospace text. The table says how to draw an
+ * extension, config says whether to: nothing here is code until it is listed.
+ * Extensions the built-in code family already covers (.yaml, .json, .log, ...)
+ * are not repeated; listing one is a no-op.
+ */
+export const CODE_LANGUAGE_BY_EXTENSION: Readonly<Record<string, string | null>> = {
+	".cs": "csharp", ".cshtml": "razor", ".csproj": "xml", ".sln": "ini",
+	".css": "css", ".scss": "scss", ".less": "less",
+	".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "jsx",
+	".ts": "typescript", ".tsx": "tsx", ".vue": "vue", ".astro": "astro",
+	".py": "python", ".rb": "ruby", ".php": "php",
+	".sh": "bash", ".bash": "bash", ".zsh": "bash", ".ps1": "powershell",
+	".sql": "sql", ".go": "go", ".rs": "rust", ".java": "java",
+	".kt": "kotlin", ".kts": "kotlin", ".swift": "swift", ".dart": "dart",
+	".groovy": "groovy", ".gradle": "groovy", ".c": "c", ".h": "c", ".cpp": "cpp",
+	".proto": "proto", ".tf": "terraform", ".feature": "gherkin", ".twig": "twig",
+	".txt": null,
+};
+
+function configuredCodeExtension(path: string, codeExtra: readonly string[]): string | undefined {
+	if (codeExtra.length === 0) return undefined;
+	const lower = path.toLowerCase();
+	return codeExtra.find((ext) => lower.endsWith(ext));
+}
+
+function configuredCodeLanguage(path: string, codeExtra: readonly string[]): string | undefined {
+	const ext = configuredCodeExtension(path, codeExtra);
+	return ext ? CODE_LANGUAGE_BY_EXTENSION[ext] ?? undefined : undefined;
 }
 
 /**
@@ -159,12 +198,17 @@ export function codeDocumentLanguage(path: string | null | undefined): string | 
  * The `renderAs` value both annotate servers put on /api/plan and /api/doc for
  * a text source.
  */
-export function documentRenderKindForPath(input: string): DocumentRenderKind | null {
+export function documentRenderKindForPath(
+	input: string,
+	codeExtra: readonly string[] = [],
+): DocumentRenderKind | null {
 	const diagram = diagramRenderKindForPath(input);
 	if (diagram !== null) return diagram;
 	const trimmed = input.trim();
 	if (ASCIIDOC_FILE_RE.test(trimmed)) return "asciidoc";
-	return CODE_DOCUMENT_RE.test(trimmed) ? "code" : null;
+	if (CODE_DOCUMENT_RE.test(trimmed)) return "code";
+	// A listed extension wins over `markdownExtensions`, which only widens the set.
+	return configuredCodeExtension(trimmed, codeExtra) ? "code" : null;
 }
 
 /** True when `value` is a diagram kind, `"asciidoc"` or `"code"`. */
@@ -181,12 +225,13 @@ export function annotateDocumentRenderKind(options: {
 	mode?: string;
 	renderHtml?: boolean;
 	sourceConverted?: boolean;
+	codeExtensions?: readonly string[];
 }): DocumentRenderKind | null {
 	if (options.renderHtml === true) return null;
 	if (options.sourceConverted === true) return null;
 	if ((options.mode ?? "annotate") !== "annotate") return null;
 	if (/^https?:\/\//i.test(options.filePath.trim())) return null;
-	return documentRenderKindForPath(options.filePath);
+	return documentRenderKindForPath(options.filePath, options.codeExtensions);
 }
 
 /** Plain-text file extensions annotate accepts as markdown-rendered text (no HTML). */
@@ -222,6 +267,9 @@ const MAX_CONFIGURABLE_EXTENSION_LENGTH = 24;
 /** Most configured extensions kept, so a pathological config cannot bloat the regexes. */
 const MAX_CONFIGURABLE_EXTENSIONS = 32;
 
+/** `codeExtensions` has its own cap: the language table is larger than 32 entries. */
+const MAX_CODE_EXTENSIONS = 64;
+
 function escapeRegExp(input: string): string {
 	return input.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -255,6 +303,29 @@ export function normalizeMarkdownExtensions(value: unknown): string[] {
 		// anchored built-in patterns match the extension the way they would on
 		// a real path.
 		if (ANNOTATABLE_DOC_REGEX.test(`sample${ext}`)) continue;
+		if (result.includes(ext)) continue;
+		result.push(ext);
+	}
+	return result;
+}
+
+/**
+ * Normalize a user-supplied `codeExtensions` value: the same shape rules as
+ * `normalizeMarkdownExtensions`, kept only when the extension is a key of
+ * `CODE_LANGUAGE_BY_EXTENSION` (anything else is refused, not served as code).
+ * Built-in code extensions need no listing and drop out, and the dotenv family
+ * can never be registered.
+ */
+export function normalizeCodeExtensions(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const result: string[] = [];
+	for (const entry of value) {
+		if (result.length >= MAX_CODE_EXTENSIONS) break;
+		if (typeof entry !== "string") continue;
+		const ext = entry.trim().toLowerCase();
+		if (!CONFIGURABLE_EXTENSION_RE.test(ext)) continue;
+		if (isDeniedMarkdownExtension(ext)) continue;
+		if (!Object.prototype.hasOwnProperty.call(CODE_LANGUAGE_BY_EXTENSION, ext)) continue;
 		if (result.includes(ext)) continue;
 		result.push(ext);
 	}
@@ -360,10 +431,12 @@ export const MAX_ANNOTATABLE_FILE_BYTES = 2 * 1024 * 1024;
 export function shouldStripFrontmatter(
 	path: string | null | undefined,
 	extra: readonly string[] = [],
+	codeExtra: readonly string[] = [],
 ): boolean {
 	if (!path) return true;
 	const trimmed = path.trim();
 	if (diagramRenderKindForPath(trimmed) !== null) return false;
+	if (configuredCodeExtension(trimmed, codeExtra)) return false;
 	if (/\.mdx?$/i.test(trimmed)) return true;
 	if (isExtraMarkdownPath(trimmed, extra)) return true;
 	return !isAnnotatableTextPath(trimmed, extra);

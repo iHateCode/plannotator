@@ -17,7 +17,7 @@
  * separate decision. Extras are added on top of it.
  */
 
-import { normalizeMarkdownExtensions } from "@plannotator/core/annotatable";
+import { normalizeCodeExtensions, normalizeMarkdownExtensions } from "@plannotator/core/annotatable";
 
 /** Built-in extensions the renderer treats as openable local documents. */
 const BUILTIN_LINKED_DOC_REGEX = /\.(mdx?|txt|adoc|asciidoc|html?)$/i;
@@ -36,6 +36,22 @@ export function setExtraMarkdownExtensions(value: unknown): void {
 /** The registered extra extensions (normalized, possibly empty). */
 export function getExtraMarkdownExtensions(): string[] {
 	return extraExtensions;
+}
+
+let codeExtensions: string[] = [];
+
+/**
+ * Register the `codeExtensions` the server resolved (source files annotate
+ * opens as one highlighted code block). The renderer needs them to pick a
+ * document's language and its frontmatter rule from its path.
+ */
+export function setCodeExtensions(value: unknown): void {
+	codeExtensions = normalizeCodeExtensions(value);
+}
+
+/** The registered code extensions (normalized, possibly empty). */
+export function getCodeExtensions(): string[] {
+	return codeExtensions;
 }
 
 /**

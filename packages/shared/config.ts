@@ -288,6 +288,13 @@ export interface PlannotatorConfig {
    */
   markdownExtensions?: string[];
   /**
+   * File extensions annotate opens as highlighted source code, e.g.
+   * [".cs", ".sh"]. Opt-in, empty by default. Only extensions in
+   * CODE_LANGUAGE_BY_EXTENSION are honoured; `.env` can never be registered.
+   * Resolved by `getCodeExtensions` in ./markdown-extensions. Default: none.
+   */
+  codeExtensions?: string[];
+  /**
    * Persist successful Guided Reviews (guide content + per-section reviewed
    * state) under ~/.plannotator/guides/ (or PLANNOTATOR_DATA_DIR) so they
    * survive closing Plannotator. Set to false to disable writes; already-saved

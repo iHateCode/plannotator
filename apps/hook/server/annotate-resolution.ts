@@ -26,6 +26,7 @@ import {
   buildAnnotatableExtensionsHint,
 } from "@plannotator/shared/annotatable";
 import {
+  getCodeExtensions,
   getExtraMarkdownExtensions,
   MAX_ANNOTATABLE_FILE_BYTES,
   hasMarkdownFiles,
@@ -102,6 +103,8 @@ export async function resolveAnnotateTarget(options: {
   const { rawFilePath, projectRoot, noJina, renderMarkdown, forceApp = false, forceStatic = false } = options;
   const extraMarkdownExtensions =
     options.extraMarkdownExtensions ?? getExtraMarkdownExtensions();
+  // Listed `codeExtensions` are accepted wherever a markdown extra is.
+  const acceptedExtensions = [...extraMarkdownExtensions, ...getCodeExtensions()];
   const log = options.log ?? ((line: string) => console.error(line));
 
   // Primary resolution strips the `@` reference marker; rawFilePath is
@@ -231,7 +234,7 @@ export async function resolveAnnotateTarget(options: {
   if (folderCandidate !== null) {
     const resolvedArg = resolveUserPath(folderCandidate, projectRoot);
     // Folder annotation mode (markdown/plain text/config + HTML files)
-    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex(extraMarkdownExtensions))) {
+    if (!hasMarkdownFiles(resolvedArg, FILE_BROWSER_EXCLUDED, buildAnnotatableDocRegex(acceptedExtensions))) {
       return {
         ok: false,
         notFound: false,
@@ -313,7 +316,7 @@ export async function resolveAnnotateTarget(options: {
         notFound: false,
         message:
           `File type not supported: ${ext}\n` +
-          `Supported types: ${buildAnnotatableExtensionsHint(extraMarkdownExtensions)}\n` +
+          `Supported types: ${buildAnnotatableExtensionsHint(acceptedExtensions)}\n` +
           `For code review, use: plannotator review [DIRECTORY]`,
       };
     }
