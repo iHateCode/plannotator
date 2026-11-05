@@ -38,10 +38,11 @@ import {
 	resolveUserPath,
 	warmFileListCache,
 	getAnnotatableDocRegex,
+	getCodeExtensions,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "../generated/resolve-file.ts";
-import { documentRenderKindForPath, isDocumentRenderKind } from "../generated/annotatable.ts";
+import { codeDocumentLanguage, documentRenderKindForPath, isDocumentRenderKind } from "../generated/annotatable.ts";
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
@@ -295,8 +296,20 @@ function readDocument(res: Res, path: string, convert: boolean, options: HandleD
 		// named in `renderAs`; the editor renders a diagram through the same
 		// DiagramBlock a ```mermaid fence uses, and AsciiDoc through its own
 		// block parser, instead of the markdown pipeline.
-		const renderKind = documentRenderKindForPath(path);
-		jsonDoc(res, { markdown: snapshot.text, filepath: path, renderAs: renderKind ?? "markdown" }, options, undefined, snapshot);
+		const renderKind = documentRenderKindForPath(path, getCodeExtensions());
+		const codeLanguage = renderKind === "code" ? codeDocumentLanguage(path, getCodeExtensions()) : undefined;
+		jsonDoc(
+			res,
+			{
+				markdown: snapshot.text,
+				filepath: path,
+				renderAs: renderKind ?? "markdown",
+				...(codeLanguage ? { codeLanguage } : {}),
+			},
+			options,
+			undefined,
+			snapshot,
+		);
 	} catch {
 		json(res, { error: "Failed to read file" }, 500);
 	}

@@ -1,7 +1,7 @@
 import { piUpdateAdvert } from "./update-advert.ts";
 import { schedulePiDailyPing } from "./daily-ping.ts";
 import { crossOriginRefusalBody, isSameOriginOrNoOrigin } from "../generated/request-origin.ts";
-import { annotateDocumentRenderKind } from "../generated/annotatable.ts";
+import { annotateDocumentRenderKind, codeDocumentLanguage } from "../generated/annotatable.ts";
 import { likelyAppHtmlEncoding, prewarmAppHtml } from "../generated/app-html.ts";
 import { openPackedApp } from "../generated/packed-app.ts";
 import { createServer } from "node:http";
@@ -87,7 +87,7 @@ import {
 	type FolderAnnotateHistory,
 } from "./reference.ts";
 import { closeAllFileBrowserWatchers, handleFileBrowserStreamRequest } from "./file-browser-watch.ts";
-import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
+import { getCodeExtensions, getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "../generated/resolve-file.ts";
 import { annotateBundleDocumentCounts, annotateBundleRoot, type AnnotateBundleFile } from "../generated/annotate-bundle.ts";
 import { createExternalAnnotationHandler } from "./external-annotations.ts";
 import { createNodeAgentTerminalBridge } from "./agent-terminal.ts";
@@ -440,7 +440,10 @@ export async function startAnnotateServer(options: {
 		mode: options.mode || "annotate",
 		renderHtml: options.renderHtml,
 		sourceConverted: options.sourceConverted,
+		codeExtensions: getCodeExtensions(),
 	});
+	const documentCodeLanguage =
+		documentRenderKind === "code" ? codeDocumentLanguage(options.filePath, getCodeExtensions()) : undefined;
 	const clientLease = createAnnotateClientLeaseTracker(
 		() => decision.settle({ feedback: "", annotations: [], exit: true }),
 		{ graceMs: clientLeaseGraceMs },
@@ -1032,6 +1035,7 @@ export async function startAnnotateServer(options: {
 					? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
 					: { enabled: false as const },
 				renderAs: displayRawHtml ? 'html' : documentRenderKind ?? 'markdown',
+				...(documentCodeLanguage ? { codeLanguage: documentCodeLanguage } : {}),
 				...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
 				...(diffHtml ? { diffHtml } : {}),
 				convertHtml: options.convertHtml ?? false,
@@ -1057,6 +1061,7 @@ export async function startAnnotateServer(options: {
 				// The renderer needs them to linkify relative/wiki links to
 				// sibling docs the same way it linkifies .md ones.
 				markdownExtensions: getExtraMarkdownExtensions(),
+				codeExtensions: getCodeExtensions(),
 				...(annotateDrafts.documentsEnabled ? { documentDrafts: true } : {}),
 				serverConfig: getServerConfig(gitUser, currentPiHost(), { cookieHost: !isRemoteSession() }),
 				...piUpdateAdvert(options.origin),

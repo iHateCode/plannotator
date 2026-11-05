@@ -24,7 +24,7 @@ import type { Origin } from "@plannotator/shared/agents";
 import { handleImage, handleUpload, handleServerReady, handleApiNotFound, handleFavicon, handleReferenceSkills, handleReferenceSkillContent, handleSaveNotes, readDraftGenerationFromBody, readDraftGenerationFromUrl } from "./shared-handlers";
 import { handleDoc, handleDocExists, handleFileBrowserFiles, handleObsidianVaults, handleObsidianFiles, handleObsidianDoc, resolveAllowedDocPath, type FolderAnnotateHistory } from "./reference-handlers";
 import { closeAllFileBrowserWatchers, handleFileBrowserFilesStream } from "./reference-watch";
-import { getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
+import { getCodeExtensions, getExtraMarkdownExtensions, isAnnotatableTextPath, MAX_ANNOTATABLE_FILE_BYTES, resolveUserPath, warmFileListCache } from "@plannotator/shared/resolve-file";
 import { contentHash } from "./draft";
 import { annotateDraftFilePath, annotateSessionHasRootlessDocuments, createAnnotateDraftSession } from "@plannotator/shared/annotate-draft";
 import { isDocServeAllowed, isPathAllowed } from "@plannotator/shared/doc-resolve";
@@ -89,7 +89,7 @@ import {
 } from "@plannotator/shared/live-proxy-core";
 import { randomBytes } from "node:crypto";
 import { isAgentTerminalWsRoute, supportsAnnotateAgentTerminalMode } from "@plannotator/shared/agent-terminal";
-import { annotateDocumentRenderKind } from "@plannotator/shared/annotatable";
+import { annotateDocumentRenderKind, codeDocumentLanguage } from "@plannotator/shared/annotatable";
 import {
   annotateBundleDocumentCounts,
   annotateBundleRoot,
@@ -383,7 +383,10 @@ export async function startAnnotateServer(
     mode,
     renderHtml,
     sourceConverted,
+    codeExtensions: getCodeExtensions(),
   });
+  const documentCodeLanguage =
+    documentRenderKind === "code" ? codeDocumentLanguage(filePath, getCodeExtensions()) : undefined;
 
   // Per-file version history → powers the native version diff in annotate mode.
   // Unlike the plan flow (slug = first-heading + date), annotate keys history by
@@ -1015,6 +1018,7 @@ export async function startAnnotateServer(
                 ? { enabled: true as const, reconnectGraceMs: clientLeaseGraceMs }
                 : { enabled: false as const },
               renderAs: displayRawHtml ? 'html' as const : documentRenderKind ?? ('markdown' as const),
+              ...(documentCodeLanguage ? { codeLanguage: documentCodeLanguage } : {}),
               ...(displayRawHtml ? { rawHtml: displayRawHtml } : {}),
               ...(diffHtml ? { diffHtml } : {}),
               convertHtml,
@@ -1041,6 +1045,7 @@ export async function startAnnotateServer(
               // The renderer needs them to linkify relative/wiki links to
               // sibling docs the same way it linkifies .md ones.
               markdownExtensions: getExtraMarkdownExtensions(),
+              codeExtensions: getCodeExtensions(),
               // Per-document draft copies (/api/draft/document): absent means
               // the client keeps every comment in the session draft only.
               ...(annotateDrafts.documentsEnabled ? { documentDrafts: true } : {}),

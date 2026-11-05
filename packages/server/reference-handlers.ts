@@ -21,10 +21,11 @@ import {
 	resolveUserPath,
 	warmFileListCache,
 	getAnnotatableDocRegex,
+	getCodeExtensions,
 	MAX_ANNOTATABLE_FILE_BYTES,
 	isAnnotatableTextPath,
 } from "@plannotator/shared/resolve-file";
-import { documentRenderKindForPath, isDocumentRenderKind } from "@plannotator/shared/annotatable";
+import { codeDocumentLanguage, documentRenderKindForPath, isDocumentRenderKind } from "@plannotator/shared/annotatable";
 import {
 	DOC_ACCESS_DENIED,
 	DOC_TOO_LARGE,
@@ -241,9 +242,15 @@ async function readDocument(path: string, convert: boolean, options: HandleDocOp
 		// named in `renderAs`; the editor renders a diagram through the same
 		// DiagramBlock a ```mermaid fence uses, and AsciiDoc through its own
 		// block parser, instead of the markdown pipeline.
-		const renderKind = documentRenderKindForPath(path);
+		const renderKind = documentRenderKindForPath(path, getCodeExtensions());
+		const codeLanguage = renderKind === "code" ? codeDocumentLanguage(path, getCodeExtensions()) : undefined;
 		return docJson(
-			{ markdown: snapshot.text, filepath: path, renderAs: renderKind ?? "markdown" },
+			{
+				markdown: snapshot.text,
+				filepath: path,
+				renderAs: renderKind ?? "markdown",
+				...(codeLanguage ? { codeLanguage } : {}),
+			},
 			options,
 			snapshot,
 		);
