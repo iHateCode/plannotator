@@ -30,7 +30,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { INBOX_REPO_TTL_MS, inboxId, type InboxPullsAnswer } from "@plannotator/core/inbox-types";
+import { INBOX_REPO_TTL_MS, inboxId, type InboxPullRiskAnswer, type InboxPullRiskModels, type InboxPullsAnswer } from "@plannotator/core/inbox-types";
 import { startInboxServer, type InboxServer } from "./inbox";
 import {
   compareBranch,
@@ -38,6 +38,8 @@ import {
   type InboxPulls,
   GITHUB_SEARCH_MAX_CHARS,
   githubPullSearches,
+  GITHUB_PULLS_QUERY,
+  INBOX_PULL_DESCRIPTION_MAX_CHARS,
   byActivity,
   githubOthersSearches,
   GITLAB_PROJECTS_PER_QUERY,
@@ -49,6 +51,7 @@ import {
   INBOX_PULLS_OTHERS_FRESH_MS,
   INBOX_PULLS_RATE_FLOOR,
   linkInboxPulls,
+  threadAgent,
   parseGithubPulls,
   parseGitlabPulls,
   previewOf,
@@ -58,6 +61,7 @@ import type { TailscaleRunner } from "@plannotator/shared/tailscale";
 import type { RefRunner } from "./ref-cards";
 import type { PRRuntime } from "@plannotator/shared/pr-provider";
 import type { PullAvatarOptions } from "./inbox-pull-avatars";
+import type { PullRiskOptions, RiskRun } from "./inbox-pull-risk";
 
 const roots: string[] = [];
 const servers: InboxServer[] = [];
@@ -112,6 +116,19 @@ const GH_ANSWER = {
   },
 };
 
+/**
+ * `gh api --jq` as a person's shell may have it: the program picks what it names, and under CLICOLOR_FORCE an object
+ * answer comes out coloured (real gh 2.99, whatever NO_COLOR says) while a string comes out raw.
+ */
+function ghJq(args: string[], pull: { sha: string; body: string | null }): { stdout: string; stderr: string; exitCode: number } {
+  const program = args[args.indexOf("--jq") + 1] ?? "";
+  // The head alone (readHeadNow: the whole diff a risk judgment reads): a string answer, printed raw.
+  if (program === ".head.sha") return { stdout: `${pull.sha}\n`, stderr: "", exitCode: 0 };
+  const picked = { ...(/\bsha: \.head\.sha\b/.test(program) ? { sha: pull.sha } : {}), ...(/\bbody: \.body\b/.test(program) ? { body: pull.body } : {}) };
+  const json = JSON.stringify(picked);
+  return { stdout: `${/\| *tojson *$/.test(program) ? json : `\u001b[1;38m${json}\u001b[m`}\n`, stderr: "", exitCode: 0 };
+}
+
 /** A call of the Others read (its own query), apart from the person's own lists. */
 const othersCall = (args: readonly string[]) => args.some((a) => a.startsWith("query=query InboxPullsOthers"));
 
@@ -137,8 +154,12 @@ interface Forge {
   othersFail: string | null;
   /** How long a GitHub Others read takes, in ms (default: at once). */
   othersDelayMs?: number;
-  /** The head commit `gh api … pulls/N --jq .head.sha` answers (default: the list's `headRefOid`); a list: one per read. */
+  /** The head commit `gh api … pulls/N --jq …` answers (default: the list's `headRefOid`); a list: one per read. */
   heads: string[] | null;
+  /** The description that read answers, by PR number. */
+  bodies: Record<string, string | null>;
+  /** The commits GitHub says the PR has; null, that read fails. */
+  prCommits?: string[] | null;
 }
 
 /** gh signed in to github.com only; glab signed in nowhere. */
@@ -149,11 +170,16 @@ function forge(answer: unknown = GH_ANSWER): Forge {
     othersAnswer: { data: { viewer: { login: "dana" }, others0: { issueCount: 0, nodes: [] } } },
     othersFail: null,
     heads: null,
+    bodies: {},
     graphql: () => f.calls.filter((c) => c.args.includes("graphql") && !othersCall(c.args)),
     others: () => f.calls.filter((c) => othersCall(c.args)),
     run: async (cli, args) => {
       f.calls.push({ cli, args });
-      if (cli === "gh" && args.includes("--jq")) return { stdout: `${f.heads ? f.heads.shift() ?? "" : String(args[3]!.split("/").at(-1)).padStart(40, "a")}\n`, stderr: "", exitCode: 0 };
+      if (cli === "gh" && args.some((a) => a.includes("/commits?"))) return f.prCommits ? { stdout: `${f.prCommits.join("\n")}\n`, stderr: "", exitCode: 0 } : { stdout: "", stderr: "HTTP 502", exitCode: 1 };
+      if (cli === "gh" && args.includes("--jq")) {
+        const number = String(args[3]!.split("/").at(-1));
+        return ghJq(args, { sha: f.heads ? f.heads.shift() ?? "" : number.padStart(40, "a"), body: f.bodies[number] ?? null });
+      }
       if (cli === "gh" && args[0] === "auth") return { stdout: JSON.stringify({ hosts: { "github.com": [{ login: "dana", active: true, state: "success" }] } }), stderr: "", exitCode: 0 };
       if (cli === "glab" && args[0] === "auth") return { stdout: "", stderr: "No hosts logged in", exitCode: 1 };
       if (cli === "gh" && othersCall(args)) {
@@ -198,7 +224,7 @@ function postForge(): PostForge {
   return f;
 }
 
-async function world(options: { codeReview?: boolean; answer?: unknown; tailscale?: TailscaleRunner; board?: boolean; gitlab?: boolean; avatars?: Partial<PullAvatarOptions> } = {}) {
+async function world(options: { codeReview?: boolean; answer?: unknown; tailscale?: TailscaleRunner; board?: boolean; gitlab?: boolean; avatars?: Partial<PullAvatarOptions>; pullRisk?: Pick<PullRiskOptions, "run" | "agents" | "listModels">; repoDelayMs?: number } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "plannotator-inbox-pulls-")));
   roots.push(root);
   const project = join(root, "billing-svc");
@@ -222,8 +248,12 @@ async function world(options: { codeReview?: boolean; answer?: unknown; tailscal
     ...(options.tailscale ? { tailscale: options.tailscale } : {}),
     ...(options.board === undefined ? {} : { board: options.board }),
     ...(options.avatars ? { pullAvatars: options.avatars } : {}),
+    ...(options.pullRisk ? { pullRisk: options.pullRisk } : {}),
     refRunner: f.run,
-    readProjectRepo: async () => repo,
+    readProjectRepo: async () => {
+      if (options.repoDelayMs) await Bun.sleep(options.repoDelayMs);
+      return repo;
+    },
   });
   servers.push(server);
   const base = `http://127.0.0.1:${server.port}`;
@@ -277,6 +307,7 @@ function gitlabForge(): Forge {
     othersAnswer: { data: { currentUser: { username: "dana" }, p0: { mergeRequests: { count: 1, nodes: [GL_MR(61)] } } } },
     othersFail: null,
     heads: null,
+    bodies: {},
     graphql: () => f.calls.filter((c) => c.args.includes("graphql") && !othersCall(c.args)),
     others: () => f.calls.filter((c) => othersCall(c.args)),
     run: async (cli, args) => {
@@ -295,6 +326,91 @@ function gitlabForge(): Forge {
   };
   return f;
 }
+
+describe("a second list read while the first waits on git", () => {
+  test("gets the same PRs, not an empty list", async () => {
+    const w = await world({ codeReview: true, repoDelayMs: 300 });
+    await w.send("Opened https://github.com/northwind/billing-svc/pull/412", "retries");
+    const answers = await Promise.all([w.pulls(), Bun.sleep(50).then(() => w.pulls())]);
+    for (const answer of answers) {
+      const body = (await answer.json()) as InboxPullsAnswer;
+      expect(body.pulls.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("risk ranking", () => {
+  const riskWorld = async (run: PullRiskOptions["run"]) =>
+    world({ codeReview: true, pullRisk: { run, agents: () => [{ id: "pi-sdk", label: "Pi" }], listModels: async () => [{ id: "a/claude-sonnet-5", label: "Sonnet 5" }, { id: "a/opus", label: "Opus" }] } });
+  const save = (base: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/inbox/pulls/risk`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body) });
+  const settings = { rules: "Anything in billing.", provider: "pi-sdk", model: "a/claude-sonnet-5" };
+
+  test("the Reviews page's read starts judgments too", async () => {
+    const runs: RiskRun[] = [];
+    const w = await riskWorld(async (run) => {
+      runs.push(run);
+      return { text: '{"risk":"high","why":"It changes the retry schedule."}' };
+    });
+    await w.send("Opened https://github.com/northwind/billing-svc/pull/412", "retries");
+    expect((await save(w.base, settings)).status).toBe(200);
+    expect((await fetch(`${w.base}/api/inbox/reviews?refresh=1`)).status).toBe(200);
+    await Bun.sleep(100);
+    expect(runs.length).toBeGreaterThan(0);
+  });
+
+  test("the list read starts judgments only once rules exist, and the window reads them back for the current heads", async () => {
+    const runs: RiskRun[] = [];
+    const w = await riskWorld(async (run) => {
+      runs.push(run);
+      return { text: '{"risk":"high","why":"It changes the retry schedule."}' };
+    });
+    await w.send("Opened https://github.com/northwind/billing-svc/pull/412", "retries");
+    await w.pulls();
+    const before = (await (await fetch(`${w.base}/api/inbox/pulls/risk`)).json()) as InboxPullRiskAnswer;
+    expect(before).toMatchObject({ rules: "", provider: null, judgments: {}, pending: 0 });
+    expect(runs).toEqual([]);
+
+    expect((await save(w.base, settings)).status).toBe(200);
+    // Saving alone starts nothing: the window reads the list next.
+    expect(runs).toEqual([]);
+    await w.pulls();
+    const started = Date.now();
+    let answer: InboxPullRiskAnswer;
+    do {
+      answer = (await (await fetch(`${w.base}/api/inbox/pulls/risk`)).json()) as InboxPullRiskAnswer;
+    } while (answer.pending > 0 && Date.now() - started < 5_000);
+    expect(answer.rules).toBe("Anything in billing.");
+    expect(answer.judgments["github.com/northwind/billing-svc#412"]).toEqual({ level: "high", why: "It changes the retry schedule." });
+    expect(runs.length).toBe(3);
+  });
+
+  test("Code review off: refused before anything runs", async () => {
+    const runs: RiskRun[] = [];
+    const w = await world({ pullRisk: { run: async (run) => (runs.push(run), null), agents: () => [{ id: "pi-sdk", label: "Pi" }] } });
+    expect((await fetch(`${w.base}/api/inbox/pulls/risk`)).status).toBe(409);
+    expect((await save(w.base, settings)).status).toBe(409);
+    expect((await fetch(`${w.base}/api/inbox/pulls/risk/models?provider=pi-sdk`)).status).toBe(409);
+    expect(runs).toEqual([]);
+  });
+
+  test("another site can't change the rules or read them", async () => {
+    const w = await riskWorld(async () => null);
+    expect((await save(w.base, settings, { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    expect((await fetch(`${w.base}/api/inbox/pulls/risk`, { headers: { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" } })).status).toBe(403);
+    expect(((await (await fetch(`${w.base}/api/inbox/pulls/risk`)).json()) as InboxPullRiskAnswer).rules).toBe("");
+  });
+
+  test("the models of an installed agent; any other agent is refused", async () => {
+    const w = await riskWorld(async () => null);
+    const list = (await (await fetch(`${w.base}/api/inbox/pulls/risk/models?provider=pi-sdk`)).json()) as InboxPullRiskModels;
+    // Pi starts on the person's own default, as the guided review does.
+    expect(list.default_model).toBeNull();
+    expect(list.models.map((m) => m.id)).toEqual(["a/claude-sonnet-5", "a/opus"]);
+    expect((await fetch(`${w.base}/api/inbox/pulls/risk/models?provider=codex-sdk`)).status).toBe(422);
+    expect((await fetch(`${w.base}/api/inbox/pulls/risk`, { method: "DELETE" })).status).toBe(405);
+  });
+});
 
 describe("off", () => {
   test("Code review off (unset): the routes refuse and nothing runs: no gh, no glab", async () => {
@@ -323,6 +439,48 @@ describe("off", () => {
     expect((await w.setCodeReview(false)).status).toBe(200);
     expect((await w.pulls("?refresh=1")).status).toBe(409);
     expect(w.forge.calls.length).toBe(asked);
+  });
+});
+
+describe("merge (the Pull requests page)", () => {
+  const KEY = "github.com/northwind/billing-svc#412";
+  const SHA = "412".padStart(40, "a");
+  const merge = (base: string, fields: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/inbox/pulls/merge`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(fields) });
+  const puts = (w: { forge: Forge }) => w.forge.calls.filter((c) => c.args.includes("PUT"));
+
+  test("Code review off: refused before anything runs", async () => {
+    const w = await world();
+    const before = w.forge.calls.length;
+    const res = await merge(w.base, { key: KEY, head_sha: SHA, confirmed: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("code_review_off");
+    expect(w.forge.calls.length).toBe(before);
+  });
+
+  test("never merges without the second click, from another site, or for a PR the list does not name", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Working.", "retries");
+    expect((await w.pulls()).status).toBe(200);
+    const unconfirmed = await merge(w.base, { key: KEY, head_sha: SHA });
+    expect(unconfirmed.status).toBe(409);
+    expect(((await unconfirmed.json()) as { code: string }).code).toBe("merge_unconfirmed");
+    expect((await merge(w.base, { key: KEY, head_sha: SHA, confirmed: true }, { Origin: "https://evil.example", "Sec-Fetch-Site": "cross-site" })).status).toBe(403);
+    expect((await merge(w.base, { key: KEY, head_sha: "nope", confirmed: true })).status).toBe(422);
+    expect((await merge(w.base, { key: "github.com/northwind/billing-svc#999", head_sha: SHA, confirmed: true })).status).toBe(404);
+    expect(puts(w)).toEqual([]);
+  });
+
+  test("the forge is asked again first: an answer that doesn't say it can merge merges nothing", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Working.", "retries");
+    expect((await w.pulls()).status).toBe(200);
+    // This fake answers the merge check with a patch, not GitHub's PR: no verdict, so no merge.
+    const res = await merge(w.base, { key: KEY, head_sha: SHA, confirmed: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("pull_merge_unknown");
+    expect(w.forge.calls.some((c) => c.args.includes("repos/northwind/billing-svc/pulls/412"))).toBe(true);
+    expect(puts(w)).toEqual([]);
   });
 });
 
@@ -483,14 +641,14 @@ describe("on", () => {
     const stack = await fetch(`${w.base}/api/inbox/pulls/diff?key=${encodeURIComponent("github.com/northwind/billing-svc#413")}&scope=stack`);
     const stackAnswer = (await stack.json()) as { patch: string; base: string; head: string };
     expect(stackAnswer.patch).toBe("diff of repos/northwind/billing-svc/compare/main...retry/backoff\n");
-    expect(stackAnswer).toMatchObject({ base: "main", head: "retry/backoff" });
+    expect(stackAnswer).toMatchObject({ base: "main", head: "retry/backoff", head_sha: "413".padStart(40, "a") });
     const diffCalls = w.forge.calls.slice(before);
     expect(diffCalls.every((c) => c.args.includes("--hostname") && c.args[c.args.indexOf("--hostname") + 1] === "github.com")).toBe(true);
 
     const unknown = await fetch(`${w.base}/api/inbox/pulls/diff?key=${encodeURIComponent("github.com/elsewhere/thing#9")}&scope=layer`);
     expect(unknown.status).toBe(404);
-    // The layer: its head, its patch, its head again; the stack: its compare.
-    expect(w.forge.calls.length).toBe(before + 4);
+    // Each: its head, its patch, its head again.
+    expect(w.forge.calls.length).toBe(before + 6);
   });
 });
 
@@ -704,9 +862,72 @@ describe("the whole stack's diff (finding C and merged layers)", () => {
     await w.pulls();
     const before = w.forge.calls.length;
     const answer = (await (await fetch(`${w.base}/api/inbox/pulls/diff?key=${encodeURIComponent("github.com/northwind/billing-svc#22")}&scope=stack`)).json()) as { head: string; base: string };
-    const call = w.forge.calls[before]!;
+    const call = w.forge.calls.slice(before).find((c) => !c.args.includes("--jq"))!;
     expect(call.args[3]).toBe("repos/northwind/billing-svc/compare/charge-client...dana:feat-2");
     expect(answer).toMatchObject({ base: "charge-client", head: "dana:feat-2" });
+  });
+
+  test("names the head its compare ended at, read around it: the list can be behind, a push during the read leaves it unknown", async () => {
+    const f = forge(stackAnswer);
+    const pulls = createInboxPulls({ run: f.run });
+    await pulls.list([{ host: "github.com", repo: "northwind/billing-svc", project_id: "prj_1" }]);
+    const pushed = "b".repeat(40);
+    f.heads = [pushed, pushed];
+    expect((await pulls.diff("github.com/northwind/billing-svc#22", "stack")).head_sha).toBe(pushed);
+    f.heads = [pushed, "c".repeat(40)];
+    expect((await pulls.diff("github.com/northwind/billing-svc#21", "stack")).head_sha).toBeNull();
+    // The commit the person read, so a whole stack's review can be pinned to it.
+    expect(pulls.readHead("github.com/northwind/billing-svc#22")).toBe(pushed);
+  });
+
+  test("a head the forge did not pin down is asked again, not kept; an answer older than the last head read is not served", async () => {
+    const f = forge(stackAnswer);
+    const pulls = createInboxPulls({ run: f.run });
+    await pulls.list([{ host: "github.com", repo: "northwind/billing-svc", project_id: "prj_1" }]);
+    const key = "github.com/northwind/billing-svc#22";
+    const newer = "b".repeat(40);
+    f.heads = ["", ""];
+    expect((await pulls.diff(key, "layer")).head_sha).toBeNull();
+    f.heads = [newer, newer];
+    expect((await pulls.diff(key, "layer")).head_sha).toBe(newer);
+    const old = "c".repeat(40);
+    f.heads = [old, old];
+    expect((await pulls.diff(key, "stack")).head_sha).toBe(old);
+    // This scope's cached answer named another head than the last one read: asked again.
+    f.heads = [newer, newer];
+    expect((await pulls.diff(key, "layer")).head_sha).toBe(newer);
+    expect(f.heads).toEqual([]);
+  });
+
+  test("a label moving updated_at reads nothing again; a new head does", async () => {
+    const at = (updatedAt: string, headRefOid: string) => answerOf([ghPull(21, { headRefName: "feat", baseRefName: "charge-client", updatedAt, headRefOid })], [], [ghPull(20, { state: "MERGED", headRefName: "charge-client", mergedAt: "2026-11-02T10:00:00Z" })]);
+    let answer = at("2026-11-03T10:00:00Z", "a".repeat(40));
+    const f = forge();
+    const run: typeof f.run = async (cli, args, env) => {
+      if (cli === "gh" && args.includes("graphql")) {
+        f.calls.push({ cli, args });
+        return { stdout: JSON.stringify(answer), stderr: "", exitCode: 0 };
+      }
+      return f.run(cli, args, env);
+    };
+    let clock = 1_000_000;
+    const pulls = createInboxPulls({ run, now: () => clock });
+    const repos = [{ host: "github.com", repo: "northwind/billing-svc", project_id: "prj_1" }];
+    const reread = async (next: unknown) => {
+      answer = next as typeof answer;
+      clock += INBOX_PULLS_FRESH_MS;
+      await pulls.list(repos);
+    };
+    await pulls.list(repos);
+    await pulls.diff("github.com/northwind/billing-svc#21", "stack");
+    await reread(at("2026-11-03T11:00:00Z", "a".repeat(40)));
+    const asked = f.calls.length;
+    await pulls.diff("github.com/northwind/billing-svc#21", "stack");
+    expect(f.calls.length).toBe(asked);
+    await reread(at("2026-11-03T12:00:00Z", "b".repeat(40)));
+    const before = f.calls.length;
+    await pulls.diff("github.com/northwind/billing-svc#21", "stack");
+    expect(f.calls.length).toBe(before + 3);
   });
 
   test("the lowest open layer's base gone (a merged branch deleted): the stack's own base", async () => {
@@ -722,7 +943,7 @@ describe("the whole stack's diff (finding C and merged layers)", () => {
     await pulls.list([{ host: "github.com", repo: "northwind/billing-svc", project_id: "prj_1" }]);
     const answer = await pulls.diff("github.com/northwind/billing-svc#21", "stack");
     expect(answer.base).toBe("main");
-    expect(f.calls.filter((c) => c.args[0] === "api" && c.args[1] === "--hostname").map((c) => c.args[3])).toEqual([
+    expect(f.calls.filter((c) => c.args[0] === "api" && c.args[1] === "--hostname" && !c.args.includes("--jq")).map((c) => c.args[3])).toEqual([
       "repos/northwind/billing-svc/compare/charge-client...feat",
       "repos/northwind/billing-svc/compare/main...feat",
     ]);
@@ -746,6 +967,131 @@ describe("the whole stack's diff (finding C and merged layers)", () => {
     const before = calls.length;
     await expect(pulls.diff("gitlab.com/northwind/ledger#5:pull", "stack")).rejects.toMatchObject({ code: "pull_diff_fork" });
     expect(calls.length).toBe(before);
+  });
+
+  describe("the PR's description", () => {
+    const repos = [{ host: "github.com", repo: "northwind/billing-svc", project_id: "prj_1" }];
+    const KEY = "github.com/northwind/billing-svc#412";
+    const reads = (f: Forge) => f.calls.filter((c) => c.args.includes("--jq"));
+
+    test("comes with the head read a layer already makes: no extra call", async () => {
+      const f = forge();
+      f.bodies["412"] = "  ## Why\n\nThe schedule table.\n";
+      const pulls = createInboxPulls({ run: f.run });
+      await pulls.list(repos);
+      const before = f.calls.length;
+      const answer = await pulls.diff(KEY, "layer");
+      expect(answer.description).toBe("## Why\n\nThe schedule table.");
+      expect(answer.head_sha).toBe("412".padStart(40, "a"));
+      // Its head, its patch, its head again.
+      expect(f.calls.length).toBe(before + 3);
+    });
+
+    test("none, or only whitespace, comments or a rule, is null", async () => {
+      for (const body of [null, "", "  \n\t ", "<!-- one -->\n\n<!-- two -->", "<!-- Describe your change.\n\nFixes #: -->", "---", "<!-- x -->\n\n***\n"]) {
+        const f = forge();
+        f.bodies["412"] = body;
+        const pulls = createInboxPulls({ run: f.run });
+        await pulls.list(repos);
+        expect((await pulls.diff(KEY, "layer")).description).toBeNull();
+      }
+    });
+
+    test("an HTML comment is gone wherever it starts, a blank line in it or not; in code it is the code", async () => {
+      const cases: [string, string][] = [
+        ["<!-- Describe your change here.\n\nFixes #: -->\n\nThe schedule.", "The schedule."],
+        ["Before <!-- one line --> after.", "Before  after."],
+        ["Before <!-- spans\nlines --> after.", "Before \n after."],
+        ["The schedule.\n\n<!-- never closed\n\nnor seen", "The schedule."],
+        ["Use `<!-- this -->` here.", "Use `<!-- this -->` here."],
+        ["```html\n<!-- kept -->\n```\n\n<!-- gone -->\nThe end.", "```html\n<!-- kept -->\n```\n\n\nThe end."],
+        ["~~~\n```\n<!-- kept -->\n~~~", "~~~\n```\n<!-- kept -->\n~~~"],
+        ["Text.\n\n    <!-- indented code -->", "Text.\n\n    <!-- indented code -->"],
+        ["A stray <!-- mid-line, never closed.", "A stray <!-- mid-line, never closed."],
+        ["<!-->\n\nThe schedule.", "The schedule."],
+        ["<!--->\n\nThe schedule.", "The schedule."],
+      ];
+      for (const [body, shown] of cases) {
+        const f = forge();
+        f.bodies["412"] = body;
+        const pulls = createInboxPulls({ run: f.run });
+        await pulls.list(repos);
+        expect((await pulls.diff(KEY, "layer")).description).toBe(shown);
+      }
+    });
+
+    test("a whole stack's diff carries this layer's, from the head reads around its compare, and each layer has its own", async () => {
+      const f = forge();
+      f.bodies["412"] = "The schedule.";
+      f.bodies["413"] = "The backoff.";
+      const pulls = createInboxPulls({ run: f.run });
+      await pulls.list(repos);
+      const before = reads(f).length;
+      expect((await pulls.diff(KEY, "stack")).description).toBe("The schedule.");
+      expect(reads(f).length).toBe(before + 2);
+      expect((await pulls.diff("github.com/northwind/billing-svc#413", "stack")).description).toBe("The backoff.");
+      expect((await pulls.diff("github.com/northwind/billing-svc#413", "layer")).description).toBe("The backoff.");
+    });
+
+    test("a read that fails costs the description, never the diff", async () => {
+      const f = forge();
+      f.bodies["412"] = "The schedule.";
+      for (const failed of [{ stdout: "", stderr: "HTTP 502", exitCode: 1 }, { stdout: "not json", stderr: "", exitCode: 0 }]) {
+        const run: typeof f.run = async (cli, args, env) => (args.includes("--jq") ? failed : f.run(cli, args, env));
+        for (const scope of ["layer", "stack"] as const) {
+          const pulls = createInboxPulls({ run });
+          await pulls.list(repos);
+          const answer = await pulls.diff(KEY, scope);
+          expect(answer.patch).toContain("diff of");
+          expect(answer.description).toBeNull();
+        }
+      }
+    });
+
+    test("a reused answer reads nothing again", async () => {
+      const f = forge();
+      f.bodies["412"] = "The schedule.";
+      const pulls = createInboxPulls({ run: f.run });
+      await pulls.list(repos);
+      await pulls.diff(KEY, "layer");
+      const before = f.calls.length;
+      expect((await pulls.diff(KEY, "layer")).description).toBe("The schedule.");
+      expect(f.calls.length).toBe(before);
+    });
+
+    test("past the cap it is cut, and says so", async () => {
+      const f = forge();
+      f.bodies["412"] = "x".repeat(INBOX_PULL_DESCRIPTION_MAX_CHARS + 10);
+      const pulls = createInboxPulls({ run: f.run });
+      await pulls.list(repos);
+      const { description } = await pulls.diff(KEY, "layer");
+      expect(description!.length).toBe(INBOX_PULL_DESCRIPTION_MAX_CHARS + 3);
+      expect(description!.endsWith("\n\n…")).toBe(true);
+    });
+
+    test("the list asks for no description and reads no PR, row by row", async () => {
+      const f = forge();
+      const pulls = createInboxPulls({ run: f.run });
+      await pulls.list(repos);
+      expect(GITHUB_PULLS_QUERY).not.toMatch(/\bbody\b/);
+      expect(f.calls.filter((c) => c.args.includes("--hostname") && !c.args.includes("graphql"))).toEqual([]);
+    });
+
+    test("GitLab: the same read, its `description`", async () => {
+      const f = gitlabForge();
+      const endpoint = "projects/northwind%2Fdata%2Fledger/merge_requests/61";
+      const run: typeof f.run = async (cli, args, env) =>
+        args[3] === endpoint
+          ? { stdout: JSON.stringify({ sha: "c".repeat(40), description: "Adds the CSV export.\n" }), stderr: "", exitCode: 0 }
+          : args[3] === `${endpoint}/raw_diffs`
+            ? { stdout: "a patch\n", stderr: "", exitCode: 0 }
+            : f.run(cli, args, env);
+      const pulls = createInboxPulls({ run });
+      await pulls.list([{ host: "gitlab.com", repo: "northwind/data/ledger", project_id: "prj_1" }]);
+      const answer = await pulls.diff("gitlab.com/northwind/data/ledger#61:pull", "layer");
+      expect(answer.description).toBe("Adds the CSV export.");
+      expect(answer.head_sha).toBe("c".repeat(40));
+    });
   });
 
   test("a diff past the cap is refused as too large", async () => {
@@ -903,6 +1249,38 @@ describe("the worst case (break-ui on #2590)", () => {
     expect(pulls.avatarUrls("gitlab.com")).toEqual({});
   });
 
+  test("reviewers' and approvers' pictures come in the same read; only the people a listed PR names may be asked for", async () => {
+    // GitLab: who approved and who was asked, each with a picture; a reviewer the forge gave no picture is left out.
+    const gl = parseGitlabPulls(
+      JSON.stringify({
+        data: {
+          currentUser: {
+            username: "dana",
+            requested: { nodes: [GL_MR(6, { approvedBy: { nodes: [{ username: "lena-v", avatarUrl: "/uploads/-/system/user/avatar/3/l.png" }] }, reviewers: { nodes: [{ username: "nina-k", avatarUrl: "https://gitlab.example.org/n.png" }, { username: "kai" }] } })] },
+            authored: { nodes: [] },
+            merged: { nodes: [] },
+          },
+        },
+      }),
+      "gitlab.example.org",
+    )!;
+    expect(gl.avatars).toEqual({ "lena-v": "https://gitlab.example.org/uploads/-/system/user/avatar/3/l.png", "nina-k": "https://gitlab.example.org/n.png" });
+    // GitHub: a requested user and an approver have pictures; a team has none to ask for.
+    const reviewed = ghPull(3, {
+      author: { login: "tomas", avatarUrl: "https://avatars.githubusercontent.com/u/2" },
+      reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "nina-k", avatarUrl: "https://avatars.githubusercontent.com/u/5" } }, { requestedReviewer: { __typename: "Team", slug: "platform" } }] },
+      latestReviews: { nodes: [{ state: "APPROVED", author: { login: "lena-v", avatarUrl: "https://avatars.githubusercontent.com/u/6" } }] },
+    });
+    const outside = ghPull(9, { reviewRequests: { nodes: [{ requestedReviewer: { __typename: "User", login: "outsider", avatarUrl: "https://avatars.githubusercontent.com/u/9" } }] }, repository: { nameWithOwner: "elsewhere/thing" } });
+    const pulls = createInboxPulls({ run: forge(answerOf([reviewed, outside])).run });
+    const listed = await pulls.list(repos);
+    expect(JSON.stringify(listed)).not.toContain("avatars.githubusercontent.com");
+    const urls = pulls.avatarUrls("github.com");
+    expect(urls).toMatchObject({ tomas: "https://avatars.githubusercontent.com/u/2", "nina-k": "https://avatars.githubusercontent.com/u/5", "lena-v": "https://avatars.githubusercontent.com/u/6" });
+    expect(urls.outsider).toBeUndefined();
+    expect(urls.platform).toBeUndefined();
+  });
+
   test("a conflicting PR says so (GitHub `mergeable`, GitLab `conflicts`); an unknown one says nothing", () => {
     const gh = parseGithubPulls(JSON.stringify(answerOf([ghPull(1, { mergeable: "CONFLICTING" }), ghPull(2, { mergeable: "UNKNOWN" }), ghPull(3, { mergeable: "MERGEABLE" })])), "github.com")!;
     const by = Object.fromEntries(gh.pulls.map((p) => [p.number, p]));
@@ -926,7 +1304,7 @@ describe("the worst case (break-ui on #2590)", () => {
     const diff = await pulls.diff("github.com/northwind/billing-svc#331", "stack");
     expect(diff.patch).toBe("diff of repos/northwind/billing-svc/compare/main...fehlermeldungen-im-dashboard\n");
     await pulls.diff("github.com/northwind/billing-svc#330", "stack");
-    expect(f.calls.at(-1)!.args[3]).toBe("repos/northwind/billing-svc/compare/main...%C3%BCbersetzung/fehlermeldungen");
+    expect(f.calls.filter((c) => !c.args.includes("--jq")).at(-1)!.args[3]).toBe("repos/northwind/billing-svc/compare/main...%C3%BCbersetzung/fehlermeldungen");
     const before = f.calls.length;
     await expect(pulls.diff("github.com/northwind/billing-svc#340", "stack")).rejects.toMatchObject({ code: "pull_diff_failed" });
     expect(f.calls.length).toBe(before);
@@ -938,6 +1316,23 @@ describe("the worst case (break-ui on #2590)", () => {
     expect(previewOf("Layer 3 fails `settle_batch()` on EUR→JPY. Rebased from `main`.")).toBe("Layer 3 fails settle_batch() on EUR→JPY. Rebased from main.");
     expect(previewOf("## Status\n\n> **Done:** the _retry_ layer, see [the PR](https://x.test/1)\n- one\n- two")).toBe("Status Done: the retry layer, see the PR one two");
     expect(previewOf("snake_case_name and 2*3*4")).toBe("snake_case_name and 2*3*4");
+  });
+
+  test("a hand-off not yet answered: a session gone is ended, one the Inbox launched is still starting", () => {
+    const messages = new Map<string, unknown>([
+      ["t_gone", { id: "t_gone", thread_id: "t_gone", author: { kind: "person" }, to: { host: "pi", session: "ses_gone" } }],
+      ["t_launched", { id: "t_launched", thread_id: "t_launched", author: { kind: "person" }, to: { host: "claude-code", session: "ses_new" }, launch: { id: "l" } }],
+    ]);
+    const store = {
+      threadsOf: () => [],
+      threadMessageIds: (thread: string) => [thread],
+      message: (id: string) => (messages.get(id) as never) ?? null,
+      threadSubject: () => "Subject",
+      threadProject: () => "prj_1",
+      sessionLive: () => false,
+    };
+    expect(threadAgent(store, "t_gone")?.ended).toBe(true);
+    expect(threadAgent(store, "t_launched")?.ended).toBeUndefined();
   });
 
   test("an agent that sent with a wake and polls no more is marked ended; a live one and an MCP-only one are not", () => {
@@ -1348,7 +1743,7 @@ describe("Post to GitHub/GitLab (the owner's answer C: the person chooses at the
     expect(w.post.calls).toHaveLength(2);
   });
 
-  test("posted at the head of the patch the person read, which the forge moved past the list; a head never read is refused", async () => {
+  test("posted at the head of the patch the person read, which the forge moved past the list; a commit not on the PR is refused for the page to fall back", async () => {
     const w = await world({ codeReview: true });
     await w.send("Ready.", "posting");
     await w.pulls();
@@ -1359,8 +1754,9 @@ describe("Post to GitHub/GitLab (the owner's answer C: the person chooses at the
     const res = await w.review({ key: PR412, head_sha: pushed, action: "comment", body: "On the pushed commit.", fileComments: [{ path: "src/retry.ts", line: 3, side: "RIGHT", body: "Here." }] });
     expect(res.status).toBe(200);
     expect((w.post.calls[0]!.input as { commit_id: string }).commit_id).toBe(pushed);
+    w.forge.prCommits = [SHA412, pushed];
     const never = await w.review({ key: PR412, head_sha: "c".repeat(40), action: "approve", body: "" });
-    expect(((await never.json()) as { code: string }).code).toBe("pull_moved");
+    expect(((await never.json()) as { code: string }).code).toBe("pull_commit_gone");
     expect(w.post.calls).toHaveLength(1);
   });
 
@@ -1371,10 +1767,12 @@ describe("Post to GitHub/GitLab (the owner's answer C: the person chooses at the
     w.forge.heads = ["b".repeat(40), "c".repeat(40)];
     const diff = (await (await fetch(`${w.base}/api/inbox/pulls/diff?key=${encodeURIComponent(PR412)}&scope=layer`)).json()) as { head_sha: string | null };
     expect(diff.head_sha).toBeNull();
-    // Neither read is kept as a head the person read: a post at either is refused, and nothing runs.
+    // Neither read is kept as a head the person read: the page sends neither (it posts nothing at a null head), and
+    // one the PR does not have is refused with nothing run.
+    w.forge.prCommits = [SHA412];
     for (const sha of ["b".repeat(40), "c".repeat(40)]) {
       const res = await w.review({ key: PR412, head_sha: sha, action: "approve", body: "" });
-      expect(((await res.json()) as { code: string }).code).toBe("pull_moved");
+      expect(((await res.json()) as { code: string }).code).toBe("pull_commit_gone");
     }
     expect(w.post.calls).toEqual([]);
   });
@@ -1449,9 +1847,12 @@ describe("Post to GitHub/GitLab (the owner's answer C: the person chooses at the
     const w = await world({ codeReview: true });
     await w.send("Ready.", "posting");
     await w.pulls();
+    w.forge.prCommits = [SHA412];
     const moved = await w.review({ key: PR412, head_sha: "f".repeat(40), action: "approve", body: "" });
     expect(moved.status).toBe(409);
-    expect(((await moved.json()) as { code: string }).code).toBe("pull_moved");
+    expect(((await moved.json()) as { code: string }).code).toBe("pull_commit_gone");
+    const notACommit = await w.review({ key: PR412, head_sha: "not a sha", action: "approve", body: "" });
+    expect(((await notACommit.json()) as { code: string }).code).toBe("pull_moved");
     expect((await w.review({ key: "github.com/northwind/billing-svc#999", head_sha: SHA412, action: "approve" })).status).toBe(404);
     expect((await w.review({ key: PR412, head_sha: SHA412, action: "merge" })).status).toBe(422);
     expect((await w.review({ key: PR412, head_sha: SHA412, action: "comment", fileComments: [{ path: "a", line: 0, side: "RIGHT", body: "x" }] })).status).toBe(422);
@@ -1461,6 +1862,103 @@ describe("Post to GitHub/GitLab (the owner's answer C: the person chooses at the
     expect(refused.status).toBe(409);
     expect(((await refused.json()) as { code: string }).code).toBe("code_review_off");
     expect(off.post.calls).toEqual([]);
+  });
+
+  test("GitHub: an older commit of the PR takes the review at that commit, in that commit's lines", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    const older = "e".repeat(40);
+    w.forge.prCommits = [older, SHA412];
+    const res = await w.review({ key: PR412, head_sha: older, action: "comment", body: "", fileComments: [{ path: "src/retry.ts", line: 3, side: "RIGHT", body: "On what I read." }] });
+    expect(res.status).toBe(200);
+    expect(w.post.calls[0]!.input).toMatchObject({ commit_id: older, comments: [{ line: 3, side: "RIGHT", body: "On what I read." }] });
+  });
+
+  test("GitHub: when it cannot say what the PR has, GitHub decides; its 422 at an older commit is the fallback, not an error", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    w.forge.prCommits = null;
+    w.post.answer = () => ({ stdout: "", stderr: "HTTP 422: Unprocessable Entity (commit_id is not part of the pull request)", exitCode: 1 });
+    const res = await w.review({ key: PR412, head_sha: "e".repeat(40), action: "comment", body: "", fileComments: [{ path: "src/retry.ts", line: 3, side: "RIGHT", body: "x" }] });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("pull_commit_gone");
+    expect(w.post.calls).toHaveLength(1);
+  });
+
+  for (const reason of ["HTTP 422: No commit found for SHA", "gh: Validation Failed (HTTP 422): commit_id is invalid", "HTTP 422: pull_request_review_thread.line must be part of the diff", "gh: Validation Failed (HTTP 422): Path could not be resolved", "HTTP 422: start_line must be part of the same hunk as the line."]) {
+    test(`GitHub at an older commit, a refusal of the commit or its lines is the fallback: ${reason}`, async () => {
+      const w = await world({ codeReview: true });
+      await w.send("Ready.", "posting");
+      await w.pulls();
+      const older = "e".repeat(40);
+      w.forge.prCommits = [older, SHA412];
+      w.post.answer = () => ({ stdout: "", stderr: reason, exitCode: 1 });
+      const res = await w.review({ key: PR412, head_sha: older, action: "comment", body: "x" });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { code: string }).code).toBe("pull_commit_gone");
+    });
+  }
+
+  for (const reason of ["gh: Unprocessable Entity (HTTP 422): Can not approve your own pull request", "HTTP 422: User can only have one pending review per pull request", "HTTP 422: Unprocessable Entity (was submitted too quickly)", "HTTP 422: Reference could not be resolved"]) {
+    test(`GitHub at an older commit, a refusal that is not about the commit stays an error: ${reason}`, async () => {
+      const w = await world({ codeReview: true });
+      await w.send("Ready.", "posting");
+      await w.pulls();
+      const older = "e".repeat(40);
+      w.forge.prCommits = [older, SHA412];
+      w.post.answer = () => ({ stdout: "", stderr: reason, exitCode: 1 });
+      const res = await w.review({ key: PR412, head_sha: older, action: "comment", body: "x" });
+      expect(res.status).toBe(502);
+      expect(await res.json()).toMatchObject({ code: "pull_review_failed" });
+    });
+  }
+
+  test("GitHub's 422 giving no reason, at a head the list still names: gone only if a force-push took that commit", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    w.post.answer = () => ({ stdout: "", stderr: "gh: Validation Failed (HTTP 422)", exitCode: 1 });
+    w.forge.prCommits = [SHA412];
+    expect((await w.review({ key: PR412, head_sha: SHA412, action: "comment", body: "x" })).status).toBe(502);
+    w.forge.prCommits = ["f".repeat(40)];
+    const gone = await w.review({ key: PR412, head_sha: SHA412, action: "comment", body: "y" });
+    expect(gone.status).toBe(409);
+    expect(((await gone.json()) as { code: string }).code).toBe("pull_commit_gone");
+  });
+
+  test("GitLab: a commit the Inbox does not name is refused, and nothing posts, whatever the commit list could say", async () => {
+    const w = await world({ codeReview: true, gitlab: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    const res = await w.review({ key: "gitlab.com/northwind/data/ledger#61:pull", head_sha: "e".repeat(40), action: "comment", body: "x" });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code: string }).code).toBe("pull_moved");
+    expect(w.post.calls.filter((c) => c.args.includes("POST"))).toEqual([]);
+  });
+
+  test("file-level comments over the limit, or one malformed: all refused and nothing posted, never cut for the page to forget", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    const one = { path: "src/retry.ts", body: "On the file." };
+    const review = (fileLevelComments: unknown[]) => w.review({ key: PR412, head_sha: SHA412, action: "comment", body: "Words.", fileLevelComments });
+    const over = await review(Array.from({ length: 501 }, () => one));
+    expect(over.status).toBe(422);
+    expect(((await over.json()) as { error: string }).error).toContain("at most 500");
+    expect((await review([one, { path: "src/retry.ts", body: "  " }])).status).toBe(422);
+    expect(w.post.calls).toEqual([]);
+  });
+
+  test("GitHub lists 250 commits at most: a full list not naming the commit says nothing, and GitHub decides", async () => {
+    const w = await world({ codeReview: true });
+    await w.send("Ready.", "posting");
+    await w.pulls();
+    w.forge.prCommits = Array.from({ length: 250 }, (_, i) => i.toString(16).padStart(40, "0"));
+    const res = await w.review({ key: PR412, head_sha: "e".repeat(40), action: "comment", body: "x" });
+    expect(res.status).toBe(200);
+    expect(w.post.calls[0]!.input).toMatchObject({ commit_id: "e".repeat(40) });
   });
 
   test("a forge that refuses the review: an error the window shows, nothing claimed posted", async () => {
@@ -1512,6 +2010,19 @@ describe("who may read it", () => {
       const guest = await through(GUEST);
       expect(guest.status).toBe(403);
       expect(((await guest.json()) as { code: string }).code).toBe("local_only");
+      // Nor may a guest read the risk rules, change them, or ask for an agent's models.
+      for (const [path, init] of [
+        ["/api/inbox/pulls/risk", {}],
+        ["/api/inbox/pulls/risk/models?provider=pi-sdk", {}],
+        ["/api/inbox/pulls/risk", { method: "POST", body: JSON.stringify({ rules: "x", provider: null, model: null }) }],
+      ] as const) {
+        const answer = await fetch(`http://127.0.0.1:${listener}${path}`, { ...init, headers: { Host: `${MAGIC}:${server.port}`, "Tailscale-User-Login": GUEST, "Content-Type": "application/json" } });
+        expect(((await answer.json()) as { code: string }).code).toBe("local_only");
+      }
+      // Nor read a project's files through a guide's expand arrows.
+      const guestFile = await fetch(`http://127.0.0.1:${listener}/api/inbox/messages/msg_any/guide/file?path=a.ts`, { headers: { Host: `${MAGIC}:${server.port}`, "Tailscale-User-Login": GUEST } });
+      expect(guestFile.status).toBe(403);
+      expect(((await guestFile.json()) as { code: string }).code).toBe("local_only");
       // Nor may a guest hand a PR to an agent.
       const handGuest = await fetch(`http://127.0.0.1:${listener}/api/inbox/pulls/owner`, {
         method: "POST",
@@ -1587,7 +2098,8 @@ describe("GET /api/inbox/pulls/avatar", () => {
     // The person's own picture too; the second ask of a picture is the cache's.
     expect((await fetch(`${w.base}/api/inbox/pulls/avatar?host=github.com&login=dana`)).status).toBe(200);
     expect((await fetch(`${w.base}/api/inbox/pulls/avatar?host=github.com&login=tomas`)).status).toBe(200);
-    expect(s.fetched).toEqual(["https://avatars.githubusercontent.com/u/2?v=4", "https://avatars.githubusercontent.com/u/1?v=4"]);
+    // Asked at s=96 (inbox-pull-avatars.ts sizeForAFace).
+    expect(s.fetched).toEqual(["https://avatars.githubusercontent.com/u/2?v=4&s=96", "https://avatars.githubusercontent.com/u/1?v=4&s=96"]);
   });
 
   test("a login the list did not show is 404 and nothing is fetched; another site's page is refused", async () => {
